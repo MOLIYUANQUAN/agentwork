@@ -230,7 +230,15 @@ function Composer({ detail, me, onSend, draftKey }: { detail: ChatDetail; me: Us
   const submit = async () => {
     const body = text.trim();
     if (!body || sending) return;
-    const mentions = detail.agents.filter((a) => body.includes('@' + a.name)).map((a) => a.id);
+    // 名字长的先认，免得「@助手2」把「助手」也叫上
+    let rest = body;
+    const mentions: number[] = [];
+    for (const a of [...detail.agents].sort((x, y) => y.name.length - x.name.length)) {
+      if (rest.includes('@' + a.name)) {
+        mentions.push(a.id);
+        rest = rest.split('@' + a.name).join(' ');
+      }
+    }
     setSending(true);
     setErr('');
     try {

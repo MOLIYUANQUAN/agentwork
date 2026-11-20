@@ -193,6 +193,9 @@ export function ConnectModal({ me, activeChat, onClose, onConnected }: { me: Use
 
 // ---------------------------------------------------------------- agent 设置
 
+// 重新上线：运行第一次接入时存在 ~/.agentwork 里的连接程序。写成这样是为了 Windows、Mac 都能直接粘贴。
+const RECONNECT = `node -e "require('child_process').spawn(process.execPath,[require('path').join(require('os').homedir(),'.agentwork','agentwork.mjs')],{stdio:'inherit'})"`;
+
 function ShareChoice({ value, onChange, disabled }: { value: 'team' | 'me'; onChange: (v: 'team' | 'me') => void; disabled?: boolean }) {
   return (
     <div className="seg" role="radiogroup" aria-label="谁能 @ 它">
@@ -217,7 +220,11 @@ export function AgentModal({ agent, activeChat, onClose, onChanged }: { agent: A
         </div>
       </div>
       {!agent.online && (
-        <p className="help">它不在线。在接入它的那台电脑上运行 <code>node ~/.agentwork/agentwork.mjs</code> 就能重新上线。</p>
+        <div className="offline-help">
+          <p className="help">它不在线。在接入它的那台电脑上打开终端，运行这条命令就重新上线（不用再配对）：</p>
+          <pre className="command small">{RECONNECT}</pre>
+          <div className="actions"><CopyButton text={RECONNECT} label="复制命令" /></div>
+        </div>
       )}
       <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await api('PATCH', `/api/agents/${agent.id}`, { name }); await onChanged(); }); }}>
         <label className="field">

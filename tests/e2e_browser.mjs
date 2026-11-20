@@ -219,10 +219,14 @@ try {
   console.log('离线排队');
   stop(connector);
   await a.locator('.rail-agent .dot.off').waitFor();
+  await a.locator('.rail-agent').click();
+  const reconnect = (await a.locator('.offline-help .command').innerText()).trim();
+  await shot(a, 'agent-offline');
+  await a.locator('.modal .icon-btn').click();
   await ask(b, 'Zeep 的 Claude', '你在吗');
   await sendAndWait(b, 'queued');
   await shot(b, 'queued');
-  connector = runCommand(`node "${path.join(FAKE_HOME, '.agentwork', 'agentwork.mjs')}"`);
+  connector = runCommand(reconnect); // 网页上「重新上线」的那条命令
   await b.locator('.agent-msg[data-status="queued"]').waitFor({ state: 'detached', timeout: 20000 });
   await waitStatus(b, 'done');
   step('电脑不在线 → 排队；重新运行连接程序 → 自动做完');
@@ -272,6 +276,22 @@ try {
   await c.locator('.chat-title span', { hasText: '3 人' }).waitFor();
   step('没账号的人打开邀请链接 → 注册 → 直接进群');
   await ctxC.close();
+
+  // 一百多条消息：先只显示最近的，点「看更早的消息」能翻回去
+  await a.locator('.chat-row', { hasText: '毕设小组' }).click();
+  await a.locator('.chat-title h1', { hasText: '毕设小组' }).waitFor();
+  const chatId = await a.evaluate(() => Number(localStorage.getItem('agentwork:last-chat')));
+  await a.evaluate(async (id) => {
+    for (let i = 1; i <= 130; i++) {
+      await fetch(`/api/chats/${id}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: `第 ${i} 条` }) });
+    }
+  }, chatId);
+  await a.reload();
+  await a.locator('.user-msg', { hasText: '第 130 条' }).waitFor();
+  if (await a.locator('.user-msg', { hasText: /^第 5 条$/ }).count()) throw new Error('一次把所有消息都加载了');
+  await a.getByRole('button', { name: '看更早的消息' }).click();
+  await a.locator('.bubble', { hasText: /^第 5 条$/ }).waitFor();
+  step('消息多的时候分页加载');
 
   console.log('深色模式和手机');
   const ctxD = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'dark', locale: 'zh-CN', storageState: await ctxA.storageState() });
