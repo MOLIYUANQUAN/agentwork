@@ -108,6 +108,7 @@ interface PairStatus { status: 'waiting' | 'claimed' | 'connected' | 'expired'; 
 
 export function ConnectModal({ me, activeChat, onClose, onConnected }: { me: User; activeChat: ChatDetail | undefined; onClose: () => void; onConnected: (a: Agent, addTo: number | null) => Promise<void> }) {
   const [name, setName] = useState(`${me.name} 的 Claude`);
+  const [dir, setDir] = useState('');
   const [pair, setPair] = useState<PairOut | null>(null);
   const [status, setStatus] = useState<PairStatus>({ status: 'waiting' });
   const [addToChat, setAddToChat] = useState(true);
@@ -145,11 +146,19 @@ export function ConnectModal({ me, activeChat, onClose, onConnected }: { me: Use
   if (!pair) {
     return (
       <Modal title="接入你的 Claude Code" onClose={onClose} width={480}>
-        <form onSubmit={(e) => { e.preventDefault(); void run(async () => setPair(await api<PairOut>('POST', '/api/agents/pair', { name }))); }}>
+        <form onSubmit={(e) => { e.preventDefault(); void run(async () => setPair(await api<PairOut>('POST', '/api/agents/pair', { name, dir }))); }}>
           <p className="help">接入后，你电脑上的 Claude Code 就成了群成员：在群里 @ 它，它在你电脑上干活，把回答发回群里。</p>
           <label className="field">
             <span>给它起个名字（群里 @ 的就是这个名字）</span>
             <input value={name} onChange={(e) => setName(e.target.value)} maxLength={24} />
+          </label>
+          <label className="field">
+            <span>让它在哪个文件夹里干活（可以不填）</span>
+            <input value={dir} onChange={(e) => setDir(e.target.value)} maxLength={300} placeholder="比如 C:\Users\你\projects\friday" spellCheck={false} autoComplete="off" />
+            <small className="field-note">
+              填你电脑上一个项目文件夹的完整路径，它就在那里读和改文件；队友借用时能读这个文件夹（只读），读不到外面。
+              不填的话，每个群给它一个空文件夹。
+            </small>
           </label>
           {err && <p className="err">{err}</p>}
           <div className="actions">
@@ -237,6 +246,13 @@ export function AgentModal({ agent, activeChat, onClose, onChanged }: { agent: A
           <div className="muted">{agentStateText(agent)}{agent.machine ? ` · ${agent.machine}` : ''}</div>
         </div>
       </div>
+      {agent.workdir && (
+        <p className="help workdir">
+          工作文件夹：<code>{agent.workdir}</code>
+          <br />
+          <span className="muted">想换一个，在那台电脑上运行连接程序时加 <code>--dir 新路径</code>。</span>
+        </p>
+      )}
       {!agent.online && (
         <div className="offline-help">
           <p className="help">它不在线。在接入它的那台电脑上打开终端，运行这条命令就重新上线（不用再配对）：</p>

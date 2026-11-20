@@ -83,6 +83,17 @@ if (args.help) {
 
 let config = readJson(CONFIG_FILE, null);
 
+if (args.dir) {
+  // 先检查文件夹在不在：路径打错了就别往下走，免得白白用掉一次性的接入码
+  let ok = false;
+  try { ok = fs.statSync(path.resolve(args.dir)).isDirectory(); } catch { /* 不存在 */ }
+  if (!ok) {
+    console.error(`找不到这个文件夹：${path.resolve(args.dir)}`);
+    console.error('检查一下路径（回网页重新点「接入」可以改），或者先把文件夹建好。');
+    process.exit(1);
+  }
+}
+
 async function claim() {
   const server = String(args.server || '').replace(/\/+$/, '');
   if (!server) {

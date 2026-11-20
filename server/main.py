@@ -236,8 +236,8 @@ def _plain(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def _agent_out(a: dict) -> dict:
-    return db.agent_public(a, online=a["kind"] == "builtin" or hub.online(a["id"]))
+def _agent_out(a: dict, for_owner: bool = False) -> dict:
+    return db.agent_public(a, online=a["kind"] == "builtin" or hub.online(a["id"]), for_owner=for_owner)
 
 
 def _my_chats(me: dict) -> list[dict]:
@@ -264,7 +264,7 @@ def bootstrap(request: Request):
     return {
         "me": db.user_public(me),
         "chats": _my_chats(me),
-        "my_agents": [_agent_out(a) for a in mine],
+        "my_agents": [_agent_out(a, for_owner=True) for a in mine],
         "engine": _engine(),
     }
 
@@ -515,6 +515,7 @@ def contacts(request: Request):
 
 class PairIn(BaseModel):
     name: str = ""
+    dir: str = ""  # optional: the folder on the owner's computer the agent should work in
 
 
 class AgentPatch(BaseModel):
@@ -539,7 +540,11 @@ def pair(body: PairIn, request: Request):
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     raw = "".join(secrets.choice(alphabet) for _ in range(8))
     code = f"{raw[:4]}-{raw[4:]}"
-    db.run("INSERT INTO pair_codes(code, user_id, name, created) VALUES(?,?,?,?)", (code, me["id"], name, db.now()))
+    workdir = body.dir.strip().strip('"')
+    if len(workdir) > 300 or re.search(r"[\x00-\x1f]", workdir):
+        raise HTTPException(400, "文件夹路径不对：太长，或者里面有换行")
+    db.run("INSERT INTO pair_codes(code, user_id, name, created, workdir) VALUES(?,?,?,?,?)",
+           (code, me["id"], name, db.now(), workdir or None))
     base = _base_url(request)
     command = f"node -e \"fetch('{base}/connect/{code}').then(r=>r.text()).then(eval)\""
     return {"code": code, "name": name, "command": command, "expires_in": PAIR_TTL}
@@ -565,6 +570,8 @@ def connect_script(code: str, request: Request):
     if not re.fullmatch(r"[A-Z0-9]{4}-[A-Z0-9]{4}", code):
         raise HTTPException(404, "bad code")
     base = _base_url(request)
+    p = db.one("SELECT workdir FROM pair_codes WHERE code=?", (code,))
+    extra = f", '--dir', {json.dumps(p['workdir'])}" if p and p["workdir"] else ""
     return f"""
 const fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 const dir = path.join(os.homedir(), '.agentwork');
@@ -577,7 +584,7 @@ fetch({json.dumps(base + '/agentwork.mjs')}).then(r => {{
   fs.writeFileSync(file, src);
   console.log('连接程序已保存到 ' + file);
   console.log('以后直接运行：node "' + file + '"');
-  const p = cp.spawn(process.execPath, [file, '--server', {json.dumps(base)}, '--code', {json.dumps(code)}], {{ stdio: 'inherit' }});
+  const p = cp.spawn(process.execPath, [file, '--server', {json.dumps(base)}, '--code', {json.dumps(code)}{extra}], {{ stdio: 'inherit' }});
   p.on('exit', c => process.exit(c ?? 0));
 }}).catch(e => {{ console.error(e.message); process.exit(1); }});
 """

@@ -13,6 +13,8 @@ export interface Agent {
   share: 'team' | 'me';
   owner: User | null;
   machine: string | null;
+  /** 它在主人电脑上的哪个文件夹干活；只有主人自己看得到 */
+  workdir?: string | null;
   online: boolean;
   last_seen: number | null;
 }

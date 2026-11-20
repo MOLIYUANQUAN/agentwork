@@ -14,7 +14,7 @@ Mac / Linux：./start.sh
 
 做了什么、怎么验收、还没做的：[docs/验收.md](docs/验收.md)。让队友从他自己的电脑进来：[docs/部署.md](docs/部署.md)。当初的计划：[docs/mvp.md](docs/mvp.md)。
 
-![主界面](docs/screenshots/1-助手.png)
+![主界面](docs/screenshots/0-真实回答.png)
 
 下面是这个方向最初的想法（比现在的版本大，结果卡、审阅这些还没做，也暂时不打算做）。
 

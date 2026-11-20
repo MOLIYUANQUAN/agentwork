@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS pair_codes(
 
 with _lock:
     _conn.executescript(SCHEMA)
+    # small migrations for databases made by earlier versions
+    if "workdir" not in {r["name"] for r in _conn.execute("PRAGMA table_info(pair_codes)").fetchall()}:
+        _conn.execute("ALTER TABLE pair_codes ADD COLUMN workdir TEXT")
 
 
 def q(sql: str, args: tuple | list = ()) -> list[dict]:
@@ -157,7 +160,7 @@ def user_public(u: dict) -> dict:
     return {"id": u["id"], "name": u["name"], "color": u["color"]}
 
 
-def agent_public(a: dict, online: bool) -> dict:
+def agent_public(a: dict, online: bool, for_owner: bool = False) -> dict:
     owner = one("SELECT id, name, color FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
     return {
         "id": a["id"],
@@ -166,6 +169,8 @@ def agent_public(a: dict, online: bool) -> dict:
         "share": a["share"],
         "owner": owner,
         "machine": a["machine"],
+        # where on the owner's computer it works: only the owner gets to see the path
+        "workdir": a["workdir"] if for_owner else None,
         "online": online,
         "last_seen": a["last_seen"],
     }

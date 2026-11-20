@@ -95,7 +95,8 @@ function touchSummary(s: State, m: Msg, countUnread: boolean): State {
 }
 
 function patchAgent(list: Agent[], a: Agent): Agent[] {
-  return list.map((x) => (x.id === a.id ? a : x));
+  // 实时推来的 agent 信息不带工作文件夹（那只给主人看）：别把已经知道的冲掉
+  return list.map((x) => (x.id === a.id ? { ...a, workdir: a.workdir ?? x.workdir } : x));
 }
 
 export function reducer(s: State, act: Action): State {

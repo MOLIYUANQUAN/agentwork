@@ -347,6 +347,35 @@ async def main() -> None:
     assert done["status"] == "error" and "断开" in done["text"]
     ok("干到一半电脑断开 → 明确报错，不会一直转圈")
 
+    print("指定工作文件夹")
+    project = TMP / "尹昊的项目"
+    project.mkdir()
+    (project / "README.md").write_text("# 尹昊的项目\n", encoding="utf8")
+    await b.api("POST", "/api/agents/pair", json={"name": "x", "dir": "a\nb"}, expect=400)
+    pair2 = await b.api("POST", "/api/agents/pair", json={"name": "尹昊 的 Claude", "dir": str(project)})
+    script2 = (await b.http.get(f"/connect/{pair2['code']}")).text
+    assert "'--dir', " + json.dumps(str(project)) in script2
+    home2 = TMP / "yinhao-pc"
+    wrong = start_connector(home2, "--server", BASE, "--code", pair2["code"], "--dir", str(TMP / "没有这个文件夹"))
+    assert wrong.wait(timeout=10) == 1 and "找不到这个文件夹" in wrong.stdout.read().decode()
+    assert (await b.api("GET", f"/api/agents/pair/{pair2['code']}"))["status"] == "waiting"  # the code was not used up
+    m = b.mark()
+    conn2 = start_connector(home2, "--server", BASE, "--code", pair2["code"], "--dir", str(project))
+    ev = await b.wait(lambda e: e["type"] == "agent" and e["agent"]["online"] and e["agent"]["name"] == "尹昊 的 Claude", since=m)
+    aid2 = ev["agent"]["id"]
+    mine2 = (await b.api("GET", "/api/bootstrap"))["my_agents"][0]
+    assert mine2["workdir"] == str(project)
+    await b.api("POST", f"/api/chats/{cid}/agents", json={"agent_id": aid2})
+    seen_by_a = next(x for x in (await a.api("GET", f"/api/chats/{cid}"))["agents"] if x["id"] == aid2)
+    assert seen_by_a["workdir"] is None  # other people never see the path
+    m = b.mark()
+    await b.api("POST", f"/api/chats/{cid}/messages", json={"text": "@尹昊 的 Claude 在项目里记一笔", "mentions": [aid2]})
+    assert (await reply_done(b, m, aid2))["status"] == "done"
+    assert (project / "模拟笔记.md").exists() and not (home2 / "work").exists()
+    conn2.terminate()
+    conn2.wait(timeout=5)
+    ok("接入时指定项目文件夹：agent 就在那里干活；路径只有主人看得到；路径打错不浪费接入码")
+
     print("通讯录、退群、删除")
     people = (await b.api("GET", "/api/contacts"))["people"]
     assert people[0]["name"] == "Zeep" and people[0]["agents"][0]["name"] == "Zeep 的 CC"
