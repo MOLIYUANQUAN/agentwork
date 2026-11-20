@@ -11,7 +11,8 @@
 //
 // 权限写死在这里，不靠提示词：
 //   主人 @  → 可以读、改工作文件夹里的文件（--permission-mode acceptEdits），默认不能跑命令
-//   别人借用 → 只有读文件、搜索、查网页这几样工具，而且只能读工作文件夹里的东西
+//   别人借用 → 只有读文件、搜索、查网页这几样工具，只能读工作文件夹里的东西，
+//               而且 .env、密钥、证书这类文件不许读
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +27,12 @@ const WORK_ROOT = process.env.AGENTWORK_WORK || path.join(os.homedir(), 'agentwo
 const MAX_JOBS = 2;
 const JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const GUEST_TOOLS = 'Read,Glob,Grep,WebSearch,WebFetch';
+// 借用的人就算在工作文件夹里，也不许读这些：项目里最常见的放密钥的地方
+const GUEST_DENY = [
+  '.env', '.env.*', '**/.env', '**/.env.*',
+  '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx', '**/id_rsa*', '**/id_ed25519*',
+  '**/credentials*', '**/secrets/**', '**/.aws/**', '**/.ssh/**', '**/.npmrc', '**/.netrc',
+].map((g) => `Read(./${g})`).join(',');
 
 // ---------------------------------------------------------------- small helpers
 
@@ -292,7 +299,7 @@ function claudeArgs(mode, resumeId) {
   } else {
     // 借用：只有这几样只读工具存在；dontAsk = 没明确允许的一律拒绝。
     // 读文件不放进 allowedTools，所以只能读工作文件夹里的，读不到主人电脑上别处的文件。
-    a.push('--tools', GUEST_TOOLS, '--allowedTools', 'WebSearch,WebFetch', '--permission-mode', 'dontAsk');
+    a.push('--tools', GUEST_TOOLS, '--allowedTools', 'WebSearch,WebFetch', '--disallowedTools', GUEST_DENY, '--permission-mode', 'dontAsk');
   }
   if (resumeId && /^[0-9a-f-]{8,64}$/i.test(resumeId)) a.push('--resume', resumeId);
   return a;
@@ -357,8 +364,9 @@ function claudeOnce(job, cwd, resumeId) {
       const opts = { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] };
       // Windows 上 claude 可能是 claude.cmd，要经过 shell。参数全是固定的开关（没有空格、没有用户输入），
       // 提示词只走 stdin，所以拼成一条命令是安全的。
+      // （规则里有括号和星号的那个参数加上双引号，cmd 才不会误解。）
       child = process.platform === 'win32'
-        ? spawn('claude ' + argv.join(' '), { ...opts, shell: true })
+        ? spawn('claude ' + argv.map((x) => (/[()*]/.test(x) ? `"${x}"` : x)).join(' '), { ...opts, shell: true })
         : spawn('claude', argv, opts);
     } catch (e) {
       resolve({ error: looksNotInstalled(e.message) ? NOT_INSTALLED : `启动 Claude Code 失败：${e.message}` });
