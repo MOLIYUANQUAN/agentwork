@@ -4,8 +4,11 @@ Small team, one process: plain sqlite3 is plenty and keeps the MVP easy to run.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -120,6 +123,33 @@ def now() -> float:
     return time.time()
 
 
+# ---------- passwords ----------
+
+def hash_pw(pw: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    h = hashlib.scrypt(pw.encode(), salt=salt, n=2**14, r=8, p=1)
+    return f"scrypt${salt.hex()}${h.hex()}"
+
+
+def check_pw(pw: str, stored: str) -> bool:
+    try:
+        _, salt, _h = stored.split("$")
+        return hmac.compare_digest(hash_pw(pw, bytes.fromhex(salt)), stored)
+    except ValueError:
+        return False
+
+
+USER_COLORS = ["#E8590C", "#2F9E44", "#1971C2", "#9C36B5", "#C2255C", "#0C8599", "#5F3DC4", "#E67700"]
+
+
+def create_user(name: str, email: str, password: str) -> int:
+    count = one("SELECT count(*) AS n FROM users")["n"]
+    return run(
+        "INSERT INTO users(name, email, pw_hash, color, created) VALUES(?,?,?,?,?)",
+        (name, email, hash_pw(password), USER_COLORS[count % len(USER_COLORS)], now()),
+    )
+
+
 # ---------- shapes sent to the browser ----------
 
 def user_public(u: dict) -> dict:
@@ -156,8 +186,9 @@ def message_public(m: dict) -> dict:
     elif m["author_type"] == "agent":
         a = one("SELECT name, kind, owner_id FROM agents WHERE id=?", (m["author_id"],))
         if a:
-            owner = one("SELECT name FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
-            author = {"name": a["name"], "kind": a["kind"], "owner": owner["name"] if owner else None}
+            owner = one("SELECT name, color FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
+            author = {"name": a["name"], "kind": a["kind"], "owner": owner["name"] if owner else None,
+                      "color": owner["color"] if owner else None}
         else:
             author = {"name": meta.get("agent_name") or "已删除的 agent", "kind": meta.get("agent_kind") or "claude_code",
                       "owner": meta.get("owner"), "gone": True}

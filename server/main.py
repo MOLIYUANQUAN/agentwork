@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -29,7 +28,6 @@ from .hub import hub  # noqa: E402
 
 app = FastAPI(title="agentwork")
 COOKIE = "aw_session"
-COLORS = ["#E8590C", "#2F9E44", "#1971C2", "#9C36B5", "#C2255C", "#0C8599", "#5F3DC4", "#E67700"]
 WEB_DIST = ROOT / "web" / "dist"
 CONNECTOR = ROOT / "connector" / "agentwork.mjs"
 PAIR_TTL = 15 * 60
@@ -42,20 +40,6 @@ async def _startup() -> None:
 
 
 # ---------------------------------------------------------------- auth
-
-def _hash_pw(pw: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    h = hashlib.scrypt(pw.encode(), salt=salt, n=2**14, r=8, p=1)
-    return f"scrypt${salt.hex()}${h.hex()}"
-
-
-def _check_pw(pw: str, stored: str) -> bool:
-    try:
-        _, salt, h = stored.split("$")
-    except ValueError:
-        return False
-    return hmac.compare_digest(_hash_pw(pw, bytes.fromhex(salt)), stored)
-
 
 def _sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
@@ -103,11 +87,7 @@ def register(body: RegisterIn, resp: Response):
         raise HTTPException(400, "密码至少 6 位")
     if db.one("SELECT 1 FROM users WHERE email=?", (email,)):
         raise HTTPException(400, "这个邮箱已经注册过了，直接登录")
-    count = db.one("SELECT count(*) AS n FROM users")["n"]
-    uid = db.run(
-        "INSERT INTO users(name, email, pw_hash, color, created) VALUES(?,?,?,?,?)",
-        (name, email, _hash_pw(body.password), COLORS[count % len(COLORS)], db.now()),
-    )
+    uid = db.create_user(name, email, body.password)
     _login(resp, uid)
     return {"user": db.user_public(db.one("SELECT * FROM users WHERE id=?", (uid,)))}
 
@@ -115,7 +95,7 @@ def register(body: RegisterIn, resp: Response):
 @app.post("/api/login")
 def login(body: LoginIn, resp: Response):
     u = db.one("SELECT * FROM users WHERE email=?", (body.email.strip().lower(),))
-    if not u or not _check_pw(body.password, u["pw_hash"]):
+    if not u or not db.check_pw(body.password, u["pw_hash"]):
         raise HTTPException(400, "邮箱或密码不对")
     _login(resp, u["id"])
     return {"user": db.user_public(u)}
