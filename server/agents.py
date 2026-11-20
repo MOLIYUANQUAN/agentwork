@@ -58,19 +58,31 @@ def _fmt(m: dict, limit: int = 1500) -> str:
     return f"[{t}] {_author(m)}：{text}"
 
 
-def context_lines(chat_id: int, before_id: int, agent_id: int | None) -> list[str]:
+def context_lines(chat_id: int, before_id: int, agent_id: int | None, mode: str | None = None) -> list[str]:
     """Recent chat for the agent. For an agent with its own memory (Claude Code
-    resumes its session per chat) we send only what happened since it last spoke."""
-    rows: list[dict] = []
+    resumes its session per chat and per mode) we send only what happened since it
+    last spoke in that mode; the first time, the last CONTEXT_FIRST messages."""
     if agent_id is not None:
-        last = db.one(
-            "SELECT max(id) AS m FROM messages WHERE chat_id=? AND author_type='agent' AND author_id=? AND status='done' AND id<?",
+        mine = db.q(
+            "SELECT id, meta FROM messages WHERE chat_id=? AND author_type='agent' AND author_id=? AND status='done' AND id<? "
+            "ORDER BY id DESC LIMIT 200",
             (chat_id, agent_id, before_id),
         )
-        if last and last["m"]:
+        last = None
+        for r in mine:
+            try:
+                meta = json.loads(r["meta"] or "{}")
+            except ValueError:
+                meta = {}
+            if meta.get("declined"):
+                continue
+            if mode is None or meta.get("mode") == mode:
+                last = r["id"]
+                break
+        if last:
             rows = db.q(
                 "SELECT * FROM messages WHERE chat_id=? AND id>? AND id<? AND status='done' ORDER BY id DESC LIMIT ?",
-                (chat_id, last["m"], before_id, CONTEXT_MAX),
+                (chat_id, last, before_id, CONTEXT_MAX),
             )
             return [_fmt(m) for m in reversed(rows)]
     rows = db.q(
@@ -85,6 +97,7 @@ async def _push(m: dict) -> None:
 
 
 async def _new_reply(chat_id: int, agent: dict, question: dict, sender: dict, status: str, meta: dict) -> dict:
+    meta = {**meta, "agent_name": agent["name"], "agent_kind": agent["kind"]}
     mid = db.run(
         "INSERT INTO messages(chat_id, author_type, author_id, text, status, reply_to, requested_by, meta, created) "
         "VALUES(?, 'agent', ?, '', ?, ?, ?, ?, ?)",
@@ -246,8 +259,9 @@ async def _builtin_cli(m: dict, prompt: str) -> None:
     workdir = db.DATA_DIR / "builtin"
     workdir.mkdir(exist_ok=True)
     args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--tools", "", "--strict-mcp-config", "--no-session-persistence",
-            "--append-system-prompt", BUILTIN_SYSTEM]
+            "--tools", "", "--strict-mcp-config", "--no-session-persistence"]
+    # the instructions go in on stdin with the prompt: no Chinese text in argv (Windows cmd mangles it)
+    prompt = BUILTIN_SYSTEM + "\n\n" + prompt
     result: dict = {}
     async for ev in claude_cli_events(args, prompt, str(workdir)):
         kind = ev.get("type")
@@ -331,13 +345,13 @@ def _job_prompt(m: dict, agent: dict) -> tuple[str, str]:
     owner = db.one("SELECT * FROM users WHERE id=?", (agent["owner_id"],))
     mode = "owner" if requester["id"] == owner["id"] else "guest"
     people, agents = _names(m["chat_id"])
-    lines = context_lines(m["chat_id"], question["id"], agent["id"])
+    lines = context_lines(m["chat_id"], question["id"], agent["id"], mode)
     parts = [
         f"你是「{agent['name']}」，{owner['name']} 的 Claude Code，现在在团队聊天软件 agentwork 的群「{chat['name']}」里。",
         f"群里的人：{'、'.join(people)}。群里的 agent：{'、'.join(agents)}。",
     ]
     if lines:
-        parts.append("你上次说话之后，群里聊了这些（旧→新）：\n" + "\n".join(lines))
+        parts.append("群里最近聊了这些（旧→新，你上次回答之后的部分）：\n" + "\n".join(lines))
     parts.append(f"现在 {requester['name']} 在群里 @ 了你：\n{question['text']}")
     parts.append("你的最后一条回答会原样发到群里。像同事在群里回话：先给结论，简洁，用 Markdown。默认用中文。")
     if mode == "guest":

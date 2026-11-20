@@ -141,11 +141,30 @@ def agent_public(a: dict, online: bool) -> dict:
 
 
 def message_public(m: dict) -> dict:
+    """A message plus who wrote it, so the browser can still show a name after
+    the person left the group or the agent was deleted."""
     out = dict(m)
     try:
-        out["meta"] = json.loads(m.get("meta") or "{}")
+        meta = json.loads(m.get("meta") or "{}")
     except ValueError:
-        out["meta"] = {}
+        meta = {}
+    out["meta"] = meta
+    author = None
+    if m["author_type"] == "user":
+        u = one("SELECT id, name, color FROM users WHERE id=?", (m["author_id"],))
+        author = {"name": u["name"], "color": u["color"]} if u else {"name": "已注销", "color": "#868e96"}
+    elif m["author_type"] == "agent":
+        a = one("SELECT name, kind, owner_id FROM agents WHERE id=?", (m["author_id"],))
+        if a:
+            owner = one("SELECT name FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
+            author = {"name": a["name"], "kind": a["kind"], "owner": owner["name"] if owner else None}
+        else:
+            author = {"name": meta.get("agent_name") or "已删除的 agent", "kind": meta.get("agent_kind") or "claude_code",
+                      "owner": meta.get("owner"), "gone": True}
+        if m.get("requested_by"):
+            r = one("SELECT name FROM users WHERE id=?", (m["requested_by"],))
+            author["requester"] = r["name"] if r else None
+    out["author"] = author
     return out
 
 

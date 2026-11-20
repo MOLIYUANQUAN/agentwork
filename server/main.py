@@ -594,7 +594,8 @@ async def ws_agent(ws: WebSocket):
         db.run("UPDATE agents SET machine=?, workdir=?, last_seen=? WHERE id=?",
                (str(first.get("machine", ""))[:60], str(first.get("workdir", ""))[:300], db.now(), agent["id"]))
         owner = db.one("SELECT name FROM users WHERE id=?", (agent["owner_id"],))
-        await ws.send_text(json.dumps({"type": "ready", "agent_id": agent["id"], "name": agent["name"], "owner": owner["name"]}, ensure_ascii=False))
+        await ws.send_text(json.dumps({"type": "ready", "agent_id": agent["id"], "name": agent["name"], "owner": owner["name"],
+                                       "fake": _engine() == "fake"}, ensure_ascii=False))
         a = db.one("SELECT * FROM agents WHERE id=?", (agent["id"],))
         await hub.to_everyone_who_sees_agent(agent["id"], {"type": "agent", "agent": _agent_out(a)})
         await agents.flush_queue(agent["id"])
