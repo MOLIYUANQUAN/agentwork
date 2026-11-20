@@ -5,7 +5,7 @@
 //   第一次：node agentwork.mjs --server http://localhost:8787 --code ABCD-EFGH
 //   以后：  node agentwork.mjs
 //
-// 可选：--dir <文件夹>  所有群都在这个文件夹里干活（默认每个群一个文件夹，在 ~/agentwork/ 下）
+// 可选：--dir <文件夹>  所有群都在这个文件夹里干活（默认每个群一个文件夹，在 ~/agentwork-files/ 下）
 //       --fake          不真的调用 Claude Code，用来测试整条链路
 //
 // 权限写死在这里，不靠提示词：
@@ -20,7 +20,8 @@ import { spawn } from 'node:child_process';
 const HOME = process.env.AGENTWORK_HOME || path.join(os.homedir(), '.agentwork');
 const CONFIG_FILE = path.join(HOME, 'config.json');
 const SESSIONS_FILE = path.join(HOME, 'sessions.json');
-const WORK_ROOT = process.env.AGENTWORK_WORK || path.join(os.homedir(), 'agentwork');
+// 不叫 ~/agentwork：很多人会把这个仓库就克隆在那里
+const WORK_ROOT = process.env.AGENTWORK_WORK || path.join(os.homedir(), 'agentwork-files');
 const MAX_JOBS = 2;
 const JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const GUEST_TOOLS = 'Read,Glob,Grep,WebSearch,WebFetch';

@@ -164,6 +164,7 @@ input[type="checkbox"] { width: 15px; height: 15px; padding: 0; accent-color: va
 .seg { display: inline-flex; background: var(--tag-bg); border-radius: 8px; padding: 2px; }
 .seg button { height: 28px; padding: 0 12px; border-radius: 6px; font-size: 12.5px; color: var(--text-2); }
 .seg button.on { background: var(--panel); color: var(--text); font-weight: 500; box-shadow: var(--shadow-sm); }
+.seg + .help { margin-top: 8px; }
 .seg.wide { display: flex; margin-bottom: 18px; }
 .seg.wide button { flex: 1; height: 32px; font-size: 13.5px; }
 
@@ -384,7 +385,7 @@ button.contact-agent:hover { background: var(--hover); }
   .composer-hint { display: none; }
   .at-pop { left: 10px; width: calc(100% - 20px); }
   .side-me { display: flex; align-items: center; gap: 8px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); font-size: 13px; }
-  .side-me span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-me > span:not(.avatar) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .to-bottom { right: 12px; bottom: 76px; }
 }
 @media (prefers-reduced-motion: reduce) {

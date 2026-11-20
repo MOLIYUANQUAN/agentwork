@@ -357,7 +357,7 @@ async def _fake_stream(question: str) -> AsyncIterator[tuple[str, str]]:
     q = question.strip().replace("\n", " ")
     reply = (
         f"收到。你问的是：「{q[:80]}」。\n\n"
-        "这是**测试模式**的回答（AGENTWORK_FAKE_AI=1），没有真的调用模型。真实情况下我会：\n\n"
+        "这是**模拟模式**的回答，没有真的调用模型。真实情况下我会：\n\n"
         "1. 先看群里最近在聊什么\n2. 给出结论\n3. 需要的话列出下一步\n\n"
         "```python\nprint('hello from agentwork')\n```"
     )

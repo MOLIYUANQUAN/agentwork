@@ -46,6 +46,7 @@ let n = 0;
 const step = (s) => console.log(`  ✓ ${s}`);
 async function shot(page, name) {
   n += 1;
+  await page.waitForTimeout(250); // 等弹窗的淡入动画走完
   await page.screenshot({ path: path.join(SHOTS, `${String(n).padStart(2, '0')}-${name}.png`) });
 }
 
@@ -62,7 +63,11 @@ async function ask(page, agentName, text, shotName) {
   await box.click();
   await box.pressSequentially('@');
   await page.locator('.at-pop').waitFor();
-  if (shotName) await shot(page, shotName);
+  if (shotName) {
+    await shot(page, shotName);
+    await box.click(); // 截图会让输入框失焦、弹窗收起；点一下输入框，弹窗回来
+    await page.locator('.at-pop').waitFor();
+  }
   await page.locator('.at-row', { hasText: agentName }).first().click();
   await box.pressSequentially(text);
   return box;
