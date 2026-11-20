@@ -27,8 +27,21 @@ export function initial(boot: Bootstrap): State {
   return { me: boot.me, chats: boot.chats, myAgents: boot.my_agents, engine: boot.engine, details: {}, activeId: null, watching: false };
 }
 
+/** agent 的 Markdown 压成一行纯文字，给群列表里的预览用（和 server 的 _plain 一个意思）。 */
+function plain(text: string): string {
+  let t = text.replace(/```[\s\S]*?(```|$)/g, ' ');
+  for (let i = 0; i < 3; i++) t = t.replace(/^\s{0,3}(#{1,6}|>+|[-*+]|\d+\.|\[[ xX]\])\s+/gm, '');
+  return t
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*\*|__|~~|`/g, '')
+    .replace(/\|/g, ' ')
+    .replace(/(^|\s)[-:]{3,}(?=\s|$)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function preview(m: Msg): ChatSummary['last'] {
-  let text = (m.text || '').trim().replace(/\n/g, ' ').slice(0, 60);
+  let text = (m.author_type === 'agent' ? plain(m.text || '') : (m.text || '').trim().replace(/\n/g, ' ')).slice(0, 60);
   if (m.status === 'thinking' || m.status === 'streaming') text = '正在想…';
   else if (m.status === 'queued') text = '排队中';
   else if (m.meta.stopped && !text) text = '已停止';

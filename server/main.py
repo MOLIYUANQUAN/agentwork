@@ -196,7 +196,8 @@ def _chat_summary(chat: dict, me: dict) -> dict:
     preview = None
     if last:
         who = agents._author(last).replace("（agent）", "")
-        txt = (last["text"] or "").strip().replace("\n", " ")
+        txt = (last["text"] or "").strip()
+        txt = _plain(txt) if last["author_type"] == "agent" else txt.replace("\n", " ")
         if last["status"] in ("thinking", "streaming"):
             txt = "正在想…"
         elif last["status"] == "queued":
@@ -222,6 +223,17 @@ def _faces(chat_id: int) -> list[dict]:
         owner = db.one("SELECT color FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
         out.append({"kind": "agent", "name": a["name"], "color": owner["color"] if owner else None, "agent_kind": a["kind"]})
     return out[:4]
+
+
+def _plain(text: str) -> str:
+    """An agent's Markdown as one plain line, for the preview in the group list."""
+    t = re.sub(r"```.*?(```|$)", " ", text, flags=re.S)
+    for _ in range(3):  # "> - [ ] item": quote, bullet, checkbox
+        t = re.sub(r"^\s{0,3}(#{1,6}|>+|[-*+]|\d+\.|\[[ xX]\])\s+", "", t, flags=re.M)
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
+    t = re.sub(r"\*\*|__|~~|`", "", t).replace("|", " ")
+    t = re.sub(r"(^|\s)[-:]{3,}(?=\s|$)", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def _agent_out(a: dict) -> dict:
