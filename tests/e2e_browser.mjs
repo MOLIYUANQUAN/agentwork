@@ -65,7 +65,6 @@ async function ask(page, agentName, text, shotName) {
   await page.locator('.at-pop').waitFor();
   if (shotName) {
     await shot(page, shotName);
-    await box.click(); // 截图会让输入框失焦、弹窗收起；点一下输入框，弹窗回来
     await page.locator('.at-pop').waitFor();
   }
   await page.locator('.at-row', { hasText: agentName }).first().click();
@@ -158,7 +157,7 @@ try {
   step('出字到一半刷新页面：字还在，接着出完');
 
   console.log('接入 agent');
-  await a.locator('.rail-add').click();
+  await a.locator('.my-agents .add').click();
   await shot(a, 'connect-name');
   await a.getByRole('button', { name: '下一步' }).click();
   await a.locator('.command').waitFor();
@@ -171,7 +170,7 @@ try {
   await a.locator('.connected').waitFor({ timeout: 20000 });
   await shot(a, 'connect-done');
   await a.getByRole('button', { name: '好的' }).click();
-  await a.locator('.rail-agent .dot.on').waitFor();
+  await a.locator('.my-agent .dot.on').waitFor();
   await a.locator('.chat-title span', { hasText: '2 个 agent' }).waitFor();
   step('复制那条命令运行 → 网页显示「已连接 ✓」，并自动拉进当前群');
 
@@ -214,17 +213,43 @@ try {
   await b.locator('.agent-msg', { hasText: '只听 Zeep 的' }).waitFor();
   await shot(b, 'declined');
   step('Zeep 切到「只有我能 @」→ 尹昊被婉拒');
-  await a.locator('.rail-agent').click();
+  await a.locator('.my-agent').click();
   await a.locator('.modal').waitFor();
   await shot(a, 'agent-settings');
   await a.locator('.modal').getByRole('radio', { name: '群里谁都能 @' }).click();
   await a.locator('.modal').getByRole('radio', { name: '群里谁都能 @', checked: true }).waitFor();
   await a.locator('.modal .icon-btn').click();
 
+  console.log('agent 叫 agent、停止、复制');
+  {
+    const before = await a.locator('.agent-msg').count();
+    await a.locator('.composer textarea').fill('@助手 帮我看一下，叫上「Zeep 的 Claude」');
+    await a.locator('.composer textarea').press('Enter');
+    const second = a.locator('.agent-msg').nth(before + 1);
+    await second.waitFor({ timeout: 30000 });
+    await a.waitForFunction((i) => document.querySelectorAll('.agent-msg')[i]?.getAttribute('data-status') === 'done', before + 1, { timeout: 30000 });
+    const head = await second.locator('.msg-head').innerText();
+    if (!head.includes('Zeep 的 Claude') || !head.includes('回复 助手')) throw new Error('agent 叫 agent 的那条显示不对：' + head);
+    await a.locator('.agent-msg').nth(before).locator('.mention', { hasText: '@Zeep 的 Claude' }).waitFor();
+    await shot(a, 'agent-calls-agent');
+    step('助手在回答里 @ 了我的 agent → 它接着干，标着「回复 助手」');
+
+    await ask(a, '助手', '说长一点');
+    const running = await sendAndWait(a, 'streaming');
+    await shot(a, 'streaming-with-stop');
+    await running.getByRole('button', { name: '停止' }).click();
+    await running.locator('.msg-foot', { hasText: '已停止' }).waitFor();
+    await running.hover();
+    await running.getByRole('button', { name: '复制' }).click();
+    const copied = await a.evaluate(() => navigator.clipboard.readText());
+    if (!copied.startsWith('收到')) throw new Error('复制到的不是这条回答：' + copied.slice(0, 40));
+    step('出字到一半点「停止」→ 停住；「复制」能把回答复制走');
+  }
+
   console.log('离线排队');
   stop(connector);
-  await a.locator('.rail-agent .dot.off').waitFor();
-  await a.locator('.rail-agent').click();
+  await a.locator('.my-agent .dot.off').waitFor();
+  await a.locator('.my-agent').click();
   const reconnect = (await a.locator('.offline-help .command').innerText()).trim();
   await shot(a, 'agent-offline');
   await a.locator('.modal .icon-btn').click();
@@ -299,6 +324,13 @@ try {
   step('消息多的时候分页加载');
 
   console.log('深色模式和手机');
+  const ctxW = await browser.newContext({ viewport: { width: 1600, height: 960 }, locale: 'zh-CN', storageState: await ctxA.storageState() });
+  const w = await ctxW.newPage();
+  await w.goto(BASE);
+  await w.locator('.chat-row', { hasText: '测试群' }).click();
+  await w.locator('.agent-msg').last().waitFor();
+  await shot(w, 'wide');
+  await ctxW.close();
   const ctxD = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'dark', locale: 'zh-CN', storageState: await ctxA.storageState() });
   const d = await ctxD.newPage();
   await d.goto(BASE);
@@ -319,7 +351,8 @@ try {
   step('深色模式、手机宽度');
 
   console.log('退出');
-  await a.locator('.rail-btn').click();
+  await a.locator('.me').click();
+  await a.getByRole('menuitem', { name: '退出登录' }).click();
   await a.locator('.login').waitFor();
   step('退出登录');
   console.log(`\n全部通过。截图在 ${SHOTS}`);

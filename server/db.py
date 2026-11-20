@@ -189,7 +189,7 @@ def message_public(m: dict) -> dict:
         if a:
             owner = one("SELECT name, color FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
             author = {"name": a["name"], "kind": a["kind"], "owner": owner["name"] if owner else None,
-                      "color": owner["color"] if owner else None}
+                      "owner_id": a["owner_id"], "color": owner["color"] if owner else None}
         else:
             author = {"name": meta.get("agent_name") or "已删除的 agent", "kind": meta.get("agent_kind") or "claude_code",
                       "owner": meta.get("owner"), "gone": True}

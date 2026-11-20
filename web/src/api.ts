@@ -17,6 +17,14 @@ export interface Agent {
   last_seen: number | null;
 }
 
+/** 群头像、群头小头像用的：一个成员长什么样。 */
+export interface Face {
+  kind: 'user' | 'agent';
+  name: string;
+  color: string | null;
+  agent_kind?: 'builtin' | 'claude_code';
+}
+
 export type MsgStatus = 'queued' | 'thinking' | 'streaming' | 'done' | 'error';
 
 export interface Msg {
@@ -38,12 +46,18 @@ export interface Msg {
     error?: boolean;
     engine?: string;
     where?: string;
+    /** agent 叫 agent：第几轮、是谁叫的 */
+    hop?: number;
+    via?: string;
+    stopped?: boolean;
+    stopped_by?: string;
   };
   author: {
     name: string;
     color?: string;
     kind?: 'builtin' | 'claude_code';
     owner?: string | null;
+    owner_id?: number | null;
     requester?: string | null;
     gone?: boolean;
   } | null;
@@ -57,6 +71,7 @@ export interface ChatSummary {
   unread: number;
   last: { who: string; text: string; at: number } | null;
   created: number;
+  faces: Face[];
 }
 
 export interface ChatDetail {
@@ -72,6 +87,11 @@ export interface Bootstrap {
   chats: ChatSummary[];
   my_agents: Agent[];
   engine: 'fake' | 'api' | 'claude-cli';
+}
+
+export interface PublicConfig {
+  signup_code: boolean;
+  fake: boolean;
 }
 
 export interface Contact extends User {

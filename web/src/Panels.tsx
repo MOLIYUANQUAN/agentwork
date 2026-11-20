@@ -1,7 +1,7 @@
 // 弹窗和成员抽屉。
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Agent, api, ChatDetail, ChatSummary, copyText, User } from './api';
-import { AgentAvatar, agentStateText, Avatar, CheckIcon, CloseIcon, LinkIcon, Modal, Spinner } from './ui';
+import { AgentAvatar, agentStateText, Avatar, CheckIcon, CloseIcon, LinkIcon, Modal, Spinner, Tag } from './ui';
 
 function useAsync() {
   const [busy, setBusy] = useState(false);
@@ -66,19 +66,35 @@ export function NewChatModal({ onClose, onCreated }: { onClose: () => void; onCr
 
 // ---------------------------------------------------------------- 邀请
 
-export function InviteModal({ detail, onClose }: { detail: ChatDetail; onClose: () => void }) {
+export function InviteModal({ detail, me, onClose, onChanged }: { detail: ChatDetail; me: User; onClose: () => void; onChanged: () => Promise<void> }) {
   const link = `${location.origin}/invite/${detail.chat.invite_code}`;
+  const { busy, err, run } = useAsync();
+  const [confirmReset, setConfirmReset] = useState(false);
   return (
-    <Modal title={`邀请加入「${detail.chat.name}」`} onClose={onClose}>
-      <p className="help">把这个链接发给队友。对方打开，登录或注册后点一下就进群。</p>
+    <Modal title={`邀请加入「${detail.chat.name}」`} onClose={onClose} width={460}>
+      <p className="help">把这个链接发给队友。对方打开，登录或注册后点一下就进群。只有拿到链接的人能进来。</p>
       <div className="copy-row">
         <LinkIcon size={16} />
         <input readOnly value={link} onFocus={(e) => e.target.select()} aria-label="邀请链接" />
         <CopyButton text={link} label="复制链接" />
       </div>
       {/^(localhost|127\.)/.test(location.hostname) && (
-        <p className="help muted">现在是在本机（localhost）跑的，这个链接只有这台电脑能打开。要给别人用，得把服务放到大家都能访问的地址上。</p>
+        <p className="help muted">现在是在本机（localhost）跑的，这个链接只有这台电脑能打开。要给别人用，得把服务放到大家都能访问的地址上（见 docs/部署.md）。</p>
       )}
+      {detail.chat.created_by === me.id && (
+        <div className="reset-row">
+          {confirmReset ? (
+            <>
+              <span className="muted small">重置后，旧链接马上失效；已经在群里的人不受影响。</span>
+              <button className="btn small" onClick={() => setConfirmReset(false)}>算了</button>
+              <button className="btn small danger" disabled={busy} onClick={() => void run(async () => { await api('POST', `/api/chats/${detail.chat.id}/invite/reset`); await onChanged(); setConfirmReset(false); })}>确定重置</button>
+            </>
+          ) : (
+            <button className="link" onClick={() => setConfirmReset(true)}>链接发错人了？重置链接</button>
+          )}
+        </div>
+      )}
+      {err && <p className="err">{err}</p>}
     </Modal>
   );
 }
@@ -299,7 +315,10 @@ export function MembersDrawer({ detail, me, myAgents, onClose, onChanged, onLeft
               <button className="btn primary small" disabled={busy || !name.trim()}>保存</button>
             </form>
           ) : (
-            <h2 title="点一下改群名" onClick={() => { setName(detail.chat.name); setRenaming(true); }}>{detail.chat.name}<small>改名</small></h2>
+            <div className="drawer-title">
+              <h2>{detail.chat.name}</h2>
+              <button className="link" onClick={() => { setName(detail.chat.name); setRenaming(true); }}>改名</button>
+            </div>
           )}
           <button className="icon-btn" onClick={onClose} aria-label="关闭"><CloseIcon /></button>
         </div>
@@ -311,9 +330,9 @@ export function MembersDrawer({ detail, me, myAgents, onClose, onChanged, onLeft
               <div className="member" key={'a' + a.id}>
                 <AgentAvatar agent={a} dot={a.kind !== 'builtin'} />
                 <div className="member-main">
-                  <div className="member-name">{a.name}{mine && <em>我的</em>}</div>
+                  <div className="member-name">{a.name}{mine && <Tag kind="mine">你的 agent</Tag>}</div>
                   <div className="muted">
-                    {a.kind === 'builtin' ? '内置 · 谁都能用' : `${a.owner?.name} 的 agent · ${agentStateText(a)}`}
+                    {a.kind === 'builtin' ? '内置 · 谁都能用' : mine ? agentStateText(a) : `${a.owner?.name} 的 agent · ${agentStateText(a)}`}
                     {a.kind !== 'builtin' && !mine && (a.share === 'me' ? ' · 只听主人的' : ' · 可借用（只读）')}
                   </div>
                   {mine && (
@@ -349,7 +368,7 @@ export function MembersDrawer({ detail, me, myAgents, onClose, onChanged, onLeft
             <div className="member" key={'u' + u.id}>
               <Avatar name={u.name} color={u.color} />
               <div className="member-main">
-                <div className="member-name">{u.name}{u.id === me.id && <em>我</em>}{u.id === detail.chat.created_by && <em className="plain">群主</em>}</div>
+                <div className="member-name">{u.name}{u.id === me.id && <Tag kind="you">你</Tag>}{u.id === detail.chat.created_by && <Tag kind="plain">群主</Tag>}</div>
               </div>
             </div>
           ))}

@@ -31,6 +31,7 @@ function preview(m: Msg): ChatSummary['last'] {
   let text = (m.text || '').trim().replace(/\n/g, ' ').slice(0, 60);
   if (m.status === 'thinking' || m.status === 'streaming') text = '正在想…';
   else if (m.status === 'queued') text = '排队中';
+  else if (m.meta.stopped && !text) text = '已停止';
   return { who: m.author_type === 'system' ? '' : m.author?.name || '', text, at: m.created };
 }
 

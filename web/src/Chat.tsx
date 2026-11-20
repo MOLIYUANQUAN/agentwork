@@ -1,23 +1,19 @@
 // 右边的群聊：群头、消息、输入框。
-import { KeyboardEvent, memo, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Agent, ChatDetail, Msg, User } from './api';
+import { KeyboardEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Agent, ChatDetail, copyText, Face, Msg, User } from './api';
 import {
-  AgentAvatar, agentStateText, agentTag, Avatar, BackIcon, ClockIcon, DownIcon, duration, LockIcon, longTime,
-  Markdown, PeopleIcon, SendIcon, Spinner, WarnIcon,
+  AgentAvatar, agentStateText, AtIcon, Avatar, AvatarStack, BackIcon, CheckIcon, ClockIcon, clock, CopyIcon, dayKey, dayLabel,
+  DownIcon, duration, LockIcon, Markdown, mentionRegex, SendIcon, Spinner, StopIcon, Tag, UserPlusIcon, WarnIcon,
 } from './ui';
 
 // ---------------------------------------------------------------- one message
 
-function escapeRe(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /** 人说的话：原样显示，只把 @名字 和网址标出来。 */
 function UserText({ text, names }: { text: string; names: string[] }) {
   const parts = useMemo(() => {
-    const alts = names.filter(Boolean).sort((a, b) => b.length - a.length).map((n) => '@' + escapeRe(n));
-    alts.push('https?://[^\\s<>"\']+');
-    const re = new RegExp(`(${alts.join('|')})`, 'g');
+    const mention = mentionRegex(names);
+    const url = 'https?://[^\\s<>"\']+';
+    const re = new RegExp(mention ? `(${mention.source.slice(1, -1)}|${url})` : `(${url})`, 'g');
     return text.split(re);
   }, [text, names]);
   return (
@@ -35,12 +31,13 @@ function Steps({ steps, running }: { steps: string[]; running: boolean }) {
   const [open, setOpen] = useState(false);
   if (!steps.length) return null;
   const last = steps[steps.length - 1];
+  const canOpen = steps.length > 1 || !running;
   return (
     <div className={'steps' + (running ? ' running' : '')}>
-      <button className="steps-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        {running ? <Spinner size={12} /> : <span className="steps-tick">✓</span>}
+      <button className="steps-head" onClick={() => canOpen && setOpen(!open)} aria-expanded={open} disabled={!canOpen}>
+        {running ? <Spinner size={11} /> : <CheckIcon size={13} />}
         <span className="steps-now">{running ? last : `做了 ${steps.length} 步`}</span>
-        {(steps.length > 1 || !running) && <span className={'chev' + (open ? ' open' : '')}><DownIcon size={14} /></span>}
+        {canOpen && <span className={'chev' + (open ? ' open' : '')}><DownIcon size={13} /></span>}
       </button>
       {open && (
         <ol className="steps-list">
@@ -51,91 +48,144 @@ function Steps({ steps, running }: { steps: string[]; running: boolean }) {
   );
 }
 
-function AgentBody({ m, fake }: { m: Msg; fake: boolean }) {
+function CopyAction({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      className={'foot-btn copy' + (done ? ' done' : '')}
+      onClick={async () => {
+        if (await copyText(text)) {
+          setDone(true);
+          window.setTimeout(() => setDone(false), 1600);
+        }
+      }}
+    >
+      {done ? <CheckIcon size={12} /> : <CopyIcon size={12} />}{done ? '已复制' : '复制'}
+    </button>
+  );
+}
+
+function AgentBody({ m, fake, names, onStop }: { m: Msg; fake: boolean; names: string[]; onStop: (id: number) => void }) {
   const owner = m.author?.owner || m.meta.owner || '主人';
   const steps = m.meta.steps || [];
   const builtin = m.author?.kind === 'builtin';
+  const stop = (label: string) => (
+    <button className="foot-btn stop" onClick={() => onStop(m.id)}><StopIcon size={12} />{label}</button>
+  );
+
   if (m.status === 'queued') {
     return (
-      <div className="bubble agent queued">
-        <ClockIcon size={16} />
-        <span>排队中：{owner} 的电脑不在线，上线后自动开始</span>
-      </div>
+      <>
+        <div className="bubble agent queued">
+          <ClockIcon size={15} />
+          <span>排队中：{owner} 的电脑不在线，上线后自动开始</span>
+        </div>
+        <div className="msg-foot">{stop('不用做了')}</div>
+      </>
     );
   }
   if (m.status === 'error') {
     return (
       <div className="bubble agent error">
         <WarnIcon size={16} />
-        <div><Markdown text={m.text || '出错了'} /></div>
+        <Markdown text={m.text || '出错了'} />
       </div>
     );
   }
   const running = m.status === 'thinking' || m.status === 'streaming';
-  let foot: ReactNode = null;
+  if (m.meta.stopped && !m.text) {
+    return <div className="bubble agent muted-note">已取消，没有开始做{m.meta.stopped_by ? `（${m.meta.stopped_by} 点的）` : ''}</div>;
+  }
+  const foot: string[] = [];
   if (m.status === 'done' && !m.meta.declined) {
-    const took = m.meta.seconds !== undefined ? `用时 ${duration(m.meta.seconds)}` : '';
-    const where = builtin ? '' : `在 ${owner} 的电脑上完成`;
-    foot = (
-      <div className="msg-foot">
-        {[where, took, fake ? '模拟回答' : ''].filter(Boolean).join(' · ')}
-      </div>
-    );
+    if (m.meta.stopped) foot.push(`已停止${m.meta.stopped_by ? `（${m.meta.stopped_by} 点的）` : ''}`);
+    else if (!builtin) foot.push(`在 ${owner} 的电脑上完成`);
+    if (m.meta.seconds !== undefined && !m.meta.stopped) foot.push(`用时 ${duration(m.meta.seconds)}`);
+    if (fake) foot.push('模拟回答');
   }
   return (
     <>
       <div className={'bubble agent' + (running ? ' running' : '')}>
         <Steps steps={steps} running={running} />
         {m.text ? (
-          <div className={m.status === 'streaming' ? 'streaming' : undefined}><Markdown text={m.text} /></div>
+          <div className={m.status === 'streaming' ? 'streaming' : undefined}><Markdown text={m.text} names={names} /></div>
         ) : running ? (
-          <div className="thinking">正在想<i>.</i><i>.</i><i>.</i></div>
+          <div className="typing" aria-label="正在想"><i /><i /><i /></div>
         ) : null}
       </div>
-      {foot}
+      {running && <div className="msg-foot">{stop('停止')}</div>}
+      {m.status === 'done' && !m.meta.declined && (
+        <div className="msg-foot">
+          <span>{foot.join(' · ')}</span>
+          {m.text && <CopyAction text={m.text} />}
+        </div>
+      )}
     </>
   );
 }
 
-const MessageItem = memo(function MessageItem({ m, mine, names, fake, showTime }: { m: Msg; mine: boolean; names: string[]; fake: boolean; showTime: boolean }) {
-  const time = showTime ? <div className="time-sep">{longTime(m.created)}</div> : null;
+interface ItemProps {
+  m: Msg;
+  meId: number;
+  names: string[];
+  fake: boolean;
+  /** 同一个人连着发的第二条起：不再重复头像和名字 */
+  compact: boolean;
+  day: string | null;
+  fresh: boolean;
+  onStop: (id: number) => void;
+}
+
+const MessageItem = memo(function MessageItem({ m, meId, names, fake, compact, day, fresh, onStop }: ItemProps) {
+  const sep = day ? <div className="day-sep"><span>{day}</span></div> : null;
+  const enter = fresh ? ' enter' : '';
   if (m.author_type === 'system') {
     return (
       <>
-        {time}
-        <div className="sys-msg">{m.text}</div>
+        {sep}
+        <div className={'sys-msg' + enter}>{m.text}</div>
       </>
     );
   }
   if (m.author_type === 'agent') {
     const a = m.author || { name: 'agent' };
+    const mine = a.owner_id === meId;
+    const replyTo = m.meta.via || a.requester;
     return (
       <>
-        {time}
-        <div className="msg agent-msg" data-status={m.status}>
-          <AgentAvatar agent={{ name: a.name, kind: a.kind, owner: a.color ? { color: a.color } : undefined }} />
+        {sep}
+        <div className={'msg agent-msg' + enter} data-status={m.status}>
+          <AgentAvatar agent={{ kind: a.kind, color: a.color }} />
           <div className="msg-main">
             <div className="msg-head">
               <span className="msg-name">{a.name}</span>
-              <span className={'tag' + (a.kind === 'builtin' ? ' builtin' : '')}>{agentTag(a)}</span>
-              {m.meta.mode === 'guest' && <span className="tag guest" title="借用别人的 agent：只能看和回答，不能改文件、不能跑命令"><LockIcon size={11} />借用 · 只读</span>}
-              {a.requester && <span className="msg-for">回复 {a.requester}</span>}
+              {a.kind === 'builtin' ? <Tag kind="builtin">内置</Tag> : mine ? <Tag kind="mine">你的 agent</Tag> : <Tag kind="plain">{a.owner ? `${a.owner} 的 agent` : 'agent'}</Tag>}
+              {m.meta.mode === 'guest' && <Tag kind="guest" title="借用别人的 agent：只能看和回答，不能改文件、不能跑命令"><LockIcon size={10} />借用 · 只读</Tag>}
+              {replyTo && <span className="msg-for">回复 {replyTo}</span>}
+              <time>{clock(m.created)}</time>
             </div>
-            <AgentBody m={m} fake={fake} />
+            <AgentBody m={m} fake={fake} names={names} onStop={onStop} />
           </div>
         </div>
       </>
     );
   }
-  const a = m.author || { name: '?', color: '#868e96' };
+  const a = m.author || { name: '?', color: undefined };
+  const mine = m.author_id === meId;
   return (
     <>
-      {time}
-      <div className={'msg user-msg' + (mine ? ' mine' : '')}>
-        <Avatar name={a.name} color={a.color || '#868e96'} />
+      {sep}
+      <div className={'msg user-msg' + (compact ? ' compact' : '') + enter}>
+        {compact ? <span className="avatar-gap" /> : <Avatar name={a.name} color={a.color} />}
         <div className="msg-main">
-          {!mine && <div className="msg-head"><span className="msg-name">{a.name}</span></div>}
-          <div className="bubble user"><UserText text={m.text} names={names} /></div>
+          {!compact && (
+            <div className="msg-head">
+              <span className="msg-name">{a.name}</span>
+              {mine ? <Tag kind="you">你</Tag> : <Tag kind="human">真人</Tag>}
+              <time>{clock(m.created)}</time>
+            </div>
+          )}
+          <div className="bubble human"><UserText text={m.text} names={names} /></div>
         </div>
       </div>
     </>
@@ -175,7 +225,7 @@ function Composer({ detail, me, onSend, draftKey }: { detail: ChatDetail; me: Us
     setText(sessionStorage.getItem(draftKey) || '');
     setQuery(null);
     setErr('');
-    ta.current?.focus();
+    if (window.matchMedia('(min-width: 761px)').matches) ta.current?.focus();
   }, [draftKey]);
 
   useEffect(() => {
@@ -187,7 +237,7 @@ function Composer({ detail, me, onSend, draftKey }: { detail: ChatDetail; me: Us
     const el = ta.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 180) + 'px';
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, [text]);
 
   const picks: Pick[] = useMemo(() => {
@@ -195,25 +245,26 @@ function Composer({ detail, me, onSend, draftKey }: { detail: ChatDetail; me: Us
     const q = query.toLowerCase();
     const out: Pick[] = [];
     for (const a of detail.agents) {
-      const locked = a.share === 'me' && a.owner?.id !== me.id;
-      const bits = [a.kind === 'builtin' ? '内置，谁都能用' : `${a.owner?.name} 的 agent`];
-      if (a.kind !== 'builtin') bits.push(agentStateText(a));
-      if (a.kind !== 'builtin' && a.share === 'me') bits.push('只听主人的');
-      else if (a.kind !== 'builtin' && a.owner?.id !== me.id) bits.push('借用：只读');
-      out.push({ key: 'a' + a.id, name: a.name, agent: a, note: bits.join(' · '), muted: locked });
+      const mine = a.owner?.id === me.id;
+      const locked = a.share === 'me' && !mine;
+      let note: string;
+      if (a.kind === 'builtin') note = '内置 · 谁都能用';
+      else if (mine) note = `你的 agent · ${agentStateText(a)}`;
+      else note = `${a.owner?.name} 的 agent · ${agentStateText(a)} · ${locked ? '只听主人的' : '借用：只读'}`;
+      out.push({ key: 'a' + a.id, name: a.name, agent: a, note, muted: locked });
     }
     for (const u of detail.members) {
       if (u.id === me.id) continue;
-      out.push({ key: 'u' + u.id, name: u.name, user: u, note: '群成员' });
+      out.push({ key: 'u' + u.id, name: u.name, user: u, note: '真人 · 只是提一下，不会自动回' });
     }
     return out.filter((p) => p.name.toLowerCase().includes(q));
   }, [query, detail.agents, detail.members, me.id]);
 
   useEffect(() => { setSel(0); }, [query]);
 
-  const syncQuery = (value: string, caret: number) => {
-    const before = value.slice(0, caret);
-    const m = /(?:^|[\s　，。！？、：；,.!?:;(（])@([^\s@]{0,20})$/.exec(before) || /^@([^\s@]{0,20})$/.exec(before);
+  const syncQuery = (value: string, at: number) => {
+    const before = value.slice(0, at);
+    const m = /(?:^|[\s　，。！？、：；,.!?:;(（])@([^\s@]{0,20})$/.exec(before);
     setQuery(m ? m[1] : null);
   };
 
@@ -225,6 +276,18 @@ function Composer({ detail, me, onSend, draftKey }: { detail: ChatDetail; me: Us
     caret.current = (before + insert).length;
     setText(before + insert + text.slice(at));
     setQuery(null);
+  };
+
+  /** 点输入框下面的 @ 按钮：在光标处补一个 @，弹出列表 */
+  const startMention = () => {
+    const el = ta.current!;
+    const at = el.selectionStart ?? text.length;
+    const before = text.slice(0, at);
+    const needSpace = before.length > 0 && !/\s$/.test(before);
+    const insert = (needSpace ? ' ' : '') + '@';
+    caret.current = (before + insert).length;
+    setText(before + insert + text.slice(at));
+    setQuery('');
   };
 
   const submit = async () => {
@@ -268,44 +331,59 @@ function Composer({ detail, me, onSend, draftKey }: { detail: ChatDetail; me: Us
     }
   };
 
+  const firstUser = picks.findIndex((p) => p.user);
+
   return (
     <div className="composer">
-      {query !== null && picks.length > 0 && (
-        <div className="at-pop" role="listbox">
-          <div className="at-title">@ 谁？agent 被 @ 就会开始干活</div>
-          {picks.map((p, i) => (
-            <button
-              key={p.key}
-              role="option"
-              aria-selected={i === sel}
-              className={'at-row' + (i === sel ? ' sel' : '') + (p.muted ? ' muted' : '')}
-              onMouseEnter={() => setSel(i)}
-              onMouseDown={(e) => { e.preventDefault(); choose(p); }}
-            >
-              {p.agent ? <AgentAvatar agent={p.agent} size={28} dot={p.agent.kind !== 'builtin'} /> : <Avatar name={p.name} color={p.user!.color} size={28} />}
-              <span className="at-name">{p.name}</span>
-              <span className="at-note">{p.note}</span>
+      <div className="composer-inner">
+        {query !== null && picks.length > 0 && (
+          <div className="at-pop" role="listbox" aria-label="@ 谁">
+            {picks.map((p, i) => (
+              <div key={p.key}>
+                {i === 0 && p.agent && <div className="at-title">Agent · 被 @ 就开始干活</div>}
+                {i === firstUser && <div className="at-title">人</div>}
+                <button
+                  role="option"
+                  aria-selected={i === sel}
+                  className={'at-row' + (i === sel ? ' sel' : '') + (p.muted ? ' muted' : '')}
+                  onMouseEnter={() => setSel(i)}
+                  onMouseDown={(e) => { e.preventDefault(); choose(p); }}
+                >
+                  {p.agent ? <AgentAvatar agent={p.agent} size={30} dot={p.agent.kind !== 'builtin'} /> : <Avatar name={p.name} color={p.user!.color} size={30} />}
+                  <span className="at-text">
+                    <span className="at-name">{p.name}</span>
+                    <span className="at-note">{p.note}</span>
+                  </span>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="composer-as"><Avatar name={me.name} color={me.color} size={18} />以 <b>{me.name}</b> 的身份发言</div>
+        {err && <div className="composer-err" role="alert">{err}</div>}
+        <div className="composer-box">
+          <textarea
+            ref={ta}
+            rows={1}
+            value={text}
+            placeholder="以你自己的身份说点什么，@ 叫 agent 干活"
+            onChange={(e) => { setText(e.target.value); syncQuery(e.target.value, e.target.selectionStart); }}
+            onKeyDown={onKey}
+            onClick={(e) => syncQuery(text, e.currentTarget.selectionStart)}
+            // 失焦后收起 @ 列表；但如果这 150 毫秒里又点回了输入框，就别收
+            onBlur={() => window.setTimeout(() => { if (document.activeElement !== ta.current) setQuery(null); }, 150)}
+          />
+          <div className="composer-bar">
+            <button className="tool-btn" onMouseDown={(e) => e.preventDefault()} onClick={startMention} title="@ 一个 agent 或人" aria-label="@ 一个 agent 或人">
+              <AtIcon size={17} />
             </button>
-          ))}
+            <span className="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+            <button className="send" onClick={() => void submit()} disabled={!text.trim() || sending} aria-label="发送" title="发送（Enter）">
+              {sending ? <Spinner size={15} /> : <SendIcon size={17} />}
+            </button>
+          </div>
         </div>
-      )}
-      {err && <div className="composer-err">{err}</div>}
-      <div className="composer-box">
-        <textarea
-          ref={ta}
-          rows={1}
-          value={text}
-          placeholder="以你自己的身份说点什么，@ 叫 agent 干活"
-          onChange={(e) => { setText(e.target.value); syncQuery(e.target.value, e.target.selectionStart); }}
-          onKeyDown={onKey}
-          onClick={(e) => syncQuery(text, e.currentTarget.selectionStart)}
-          onBlur={() => window.setTimeout(() => setQuery(null), 150)}
-        />
-        <button className="send" onClick={() => void submit()} disabled={!text.trim() || sending} aria-label="发送" title="发送（Enter）">
-          {sending ? <Spinner size={16} /> : <SendIcon size={18} />}
-        </button>
       </div>
-      <div className="composer-hint">Enter 发送 · Shift+Enter 换行 · 打 @ 选 agent</div>
     </div>
   );
 }
@@ -319,6 +397,7 @@ export interface ChatPaneProps {
   fake: boolean;
   connected: boolean;
   onSend: (text: string, mentions: number[]) => Promise<void>;
+  onStop: (messageId: number) => void;
   onLoadOlder: () => Promise<void>;
   onInvite: () => void;
   onMembers: () => void;
@@ -338,8 +417,12 @@ export function ChatPane(p: ChatPaneProps) {
   const chatId = detail?.chat.id;
   const lastId = detail?.messages[detail.messages.length - 1]?.id;
   const lastLen = detail?.messages[detail.messages.length - 1]?.text.length;
+  const lastSteps = detail?.messages[detail.messages.length - 1]?.meta.steps?.length;
   const count = detail?.messages.length ?? 0;
   const prevLast = useRef<number | undefined>(undefined);
+  /** 打开这个群时已经有的最后一条：之后来的才有「进场」动画 */
+  const baseline = useRef<{ chat: number | undefined; id: number }>({ chat: undefined, id: 0 });
+  if (baseline.current.chat !== chatId) baseline.current = { chat: chatId, id: lastId ?? 0 };
 
   const toBottom = useCallback(() => {
     const el = scroller.current;
@@ -375,12 +458,12 @@ export function ChatPane(p: ChatPaneProps) {
       setNewBelow((n) => n + 1);
     }
     prevLast.current = lastId;
-  }, [lastId, lastLen, count]);
+  }, [lastId, lastLen, lastSteps, count]);
 
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
-    const at = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    const at = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (at !== stick.current) {
       stick.current = at;
       setAway(!at);
@@ -403,7 +486,17 @@ export function ChatPane(p: ChatPaneProps) {
 
   const names = useMemo(
     () => (detail ? [...detail.agents.map((a) => a.name), ...detail.members.map((u) => u.name)] : []),
-    [detail],
+    [detail?.agents, detail?.members], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const faces: Face[] = useMemo(
+    () =>
+      detail
+        ? [
+            ...detail.members.map((u) => ({ kind: 'user' as const, name: u.name, color: u.color })),
+            ...detail.agents.map((a) => ({ kind: 'agent' as const, name: a.name, color: a.owner?.color ?? null, agent_kind: a.kind })),
+          ]
+        : [],
+    [detail?.agents, detail?.members], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   if (!detail) {
@@ -427,6 +520,7 @@ export function ChatPane(p: ChatPaneProps) {
   }
 
   const onlyHello = detail.messages.every((m) => m.author_type === 'system');
+  const msgs = detail.messages;
 
   return (
     <section className="chat">
@@ -434,48 +528,59 @@ export function ChatPane(p: ChatPaneProps) {
         <button className="icon-btn back" onClick={p.onBack} aria-label="返回"><BackIcon /></button>
         <div className="chat-title">
           <h1>{detail.chat.name}</h1>
-          <span>{detail.agents.length} 个 agent · {detail.members.length} 人</span>
+          <span>{detail.agents.length} 个 agent · {detail.members.length} 人 · 仅限链接加入</span>
         </div>
-        <button className="btn ghost" onClick={p.onInvite}>邀请</button>
-        <button className="btn ghost" onClick={p.onMembers}><PeopleIcon size={16} />成员</button>
+        <button className="members-btn" onClick={p.onMembers} aria-label="成员" title="成员">
+          <AvatarStack faces={faces} max={5} />
+        </button>
+        <button className="btn" onClick={p.onInvite}><UserPlusIcon size={15} />邀请</button>
       </header>
       {!p.connected && <div className="strip warn"><Spinner size={12} />和服务器断开了，正在重连…</div>}
-      {p.fake && <div className="strip">模拟模式：agent 的回答是假的，用来走通流程。登录 Claude Code 后重启就是真的。</div>}
+      {p.fake && <div className="strip">模拟模式：agent 的回答是假的，只用来走通流程。登录 Claude Code 后重启就是真的。</div>}
       <div className="messages" ref={scroller} onScroll={onScroll}>
-        {detail.has_more && (
-          <div className="older">
-            <button className="btn ghost small" onClick={() => void older()} disabled={loadingOlder}>
-              {loadingOlder ? '加载中…' : '看更早的消息'}
-            </button>
-          </div>
-        )}
-        {detail.messages.map((m, i) => {
-          const prev = detail.messages[i - 1];
-          return (
-            <MessageItem
-              key={m.id}
-              m={m}
-              mine={m.author_type === 'user' && m.author_id === p.me.id}
-              names={names}
-              fake={p.fake}
-              showTime={!prev || m.created - prev.created > 300}
-            />
-          );
-        })}
-        {onlyHello && (
-          <div className="hint-card">
-            <b>这个群里可以这样用</b>
-            <ul>
-              <li>直接打字，就是你自己在说话。</li>
-              <li>打 <kbd>@</kbd> 选一个 agent，它会带着群里最近的聊天去干活，边想边回。</li>
-              <li>点右上角「邀请」把队友拉进来；点左边「＋」接入你自己的 Claude Code，再在「成员」里把它拉进群。</li>
-            </ul>
-          </div>
-        )}
+        <div className="messages-inner">
+          {detail.has_more && (
+            <div className="older">
+              <button className="btn ghost small" onClick={() => void older()} disabled={loadingOlder}>
+                {loadingOlder ? '加载中…' : '看更早的消息'}
+              </button>
+            </div>
+          )}
+          {msgs.map((m, i) => {
+            const prev = msgs[i - 1];
+            const newDay = !prev || dayKey(prev.created) !== dayKey(m.created);
+            const compact =
+              !newDay && !!prev && m.author_type === 'user' && prev.author_type === 'user' &&
+              prev.author_id === m.author_id && m.created - prev.created < 180;
+            return (
+              <MessageItem
+                key={m.id}
+                m={m}
+                meId={p.me.id}
+                names={names}
+                fake={p.fake}
+                compact={compact}
+                day={newDay ? dayLabel(m.created) : null}
+                fresh={m.id > baseline.current.id}
+                onStop={p.onStop}
+              />
+            );
+          })}
+          {onlyHello && (
+            <div className="hint-card">
+              <b>这个群可以这样用</b>
+              <ol>
+                <li>直接打字，就是你自己在说话。</li>
+                <li>打 <kbd>@</kbd> 选一个 agent，它会带着群里最近的聊天去干活，边想边回。</li>
+                <li>点右上角「邀请」把队友拉进来。各自在左下角接入自己的 Claude Code，队友也能 @ 它。</li>
+              </ol>
+            </div>
+          )}
+        </div>
       </div>
       {away && (
         <button className={'to-bottom' + (newBelow ? ' has-new' : '')} onClick={toBottom}>
-          <DownIcon size={15} />{newBelow ? `${newBelow} 条新消息` : '回到最新'}
+          <DownIcon size={14} />{newBelow ? `${newBelow} 条新消息` : '回到最新'}
         </button>
       )}
       <Composer detail={detail} me={p.me} onSend={async (t, m) => { await p.onSend(t, m); toBottom(); p.onAtBottom(true); }} draftKey={`draft:${detail.chat.id}`} />
