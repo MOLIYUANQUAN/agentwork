@@ -6,10 +6,11 @@
 //   以后：  node agentwork.mjs
 //
 // 可选：--dir <文件夹>  所有群都在这个文件夹里干活（默认每个群一个文件夹，在 ~/agentwork-files/ 下）
+//       --allow-commands  主人 @ 时允许它运行命令（默认不允许；--no-commands 改回去）
 //       --fake          不真的调用 Claude Code，用来测试整条链路
 //
 // 权限写死在这里，不靠提示词：
-//   主人 @  → 可以读、改工作文件夹里的文件（--permission-mode acceptEdits），不能跑命令
+//   主人 @  → 可以读、改工作文件夹里的文件（--permission-mode acceptEdits），默认不能跑命令
 //   别人借用 → 只有读文件、搜索、查网页这几样工具，而且只能读工作文件夹里的东西
 
 import fs from 'node:fs';
@@ -33,6 +34,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--fake') out.fake = true;
+    else if (a === '--allow-commands') out.allowCommands = true;
+    else if (a === '--no-commands') out.allowCommands = false;
     else if (a === '--help' || a === '-h') out.help = true;
     else if (a.startsWith('--') && i + 1 < argv.length) out[a.slice(2)] = argv[++i];
   }
@@ -72,7 +75,9 @@ if (args.help) {
   console.log(`agentwork 连接程序
   第一次：node agentwork.mjs --server <网址> --code <接入码>   （接入码在网页上点「接入 agent」拿）
   以后：  node agentwork.mjs
-  可选：  --dir <文件夹>   --fake`);
+  可选：  --dir <文件夹>      所有群都在这个文件夹里干活
+          --allow-commands    主人 @ 时允许它运行命令（默认不允许）
+          --fake              模拟回答，不真的调用 Claude Code`);
   process.exit(0);
 }
 
@@ -102,6 +107,7 @@ async function claim() {
   }
   config = { server, agent_id: data.agent_id, token: data.token, name: data.name, owner: data.owner };
   if (args.dir) config.dir = path.resolve(args.dir);
+  if (args.allowCommands) config.allowCommands = true;
   writeJson(CONFIG_FILE, config);
   try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { /* Windows */ }
   log(`接入成功：「${data.name}」现在是 ${data.owner} 的 agent。`);
@@ -112,8 +118,9 @@ if (args.code) {
 } else if (!config) {
   console.error('还没接入过。回网页点「接入 agent」，把那条命令复制过来运行。');
   process.exit(1);
-} else if (args.dir) {
-  config.dir = path.resolve(args.dir);
+} else if (args.dir || args.allowCommands !== undefined) {
+  if (args.dir) config.dir = path.resolve(args.dir);
+  if (args.allowCommands !== undefined) config.allowCommands = args.allowCommands;
   writeJson(CONFIG_FILE, config);
 }
 
@@ -175,7 +182,8 @@ function onServer(msg) {
         fake = false;
       }
       log(`已连接 ✓ 「${msg.name}」在线了（主人：${msg.owner}）${fake ? ' [模拟模式]' : ''}`);
-      log(`工作文件夹：${config.dir || path.join(WORK_ROOT, '<每个群一个>')}。这个窗口开着，agent 就在线；Ctrl+C 下线。`);
+      log(`工作文件夹：${config.dir || path.join(WORK_ROOT, '<每个群一个>')}。主人 @ 时${config.allowCommands ? '可以' : '不能'}运行命令。`);
+      log('这个窗口开着，agent 就在线；Ctrl+C 下线。');
       clearInterval(pingTimer);
       pingTimer = setInterval(() => send({ type: 'ping' }), 20000);
       break;
@@ -244,8 +252,11 @@ async function runJob(job) {
 function claudeArgs(mode, resumeId) {
   const a = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--strict-mcp-config'];
   if (mode === 'owner') {
-    // 主人：能读、能改工作文件夹里的文件。跑命令需要确认，无头模式下等于不允许。
+    // 主人：能读、能改工作文件夹里的文件（acceptEdits 只自动同意工作文件夹里的改动）。
+    // 默认不给跑命令的工具：群里别人说的话也会进提示词，不能让一句话变成你电脑上的一条命令。
+    // 想放开，启动时加 --allow-commands。
     a.push('--permission-mode', 'acceptEdits');
+    if (!config.allowCommands) a.push('--disallowedTools', 'Bash');
   } else {
     // 借用：只有这几样只读工具存在；dontAsk = 没明确允许的一律拒绝。
     // 读文件不放进 allowedTools，所以只能读工作文件夹里的，读不到主人电脑上别处的文件。
@@ -277,7 +288,7 @@ function describeTool(name, input, cwd) {
     case 'MultiEdit':
     case 'NotebookEdit': return `在改 ${relPath(input.file_path || input.notebook_path, cwd)}`;
     case 'Write': return `在写 ${relPath(input.file_path, cwd)}`;
-    case 'Bash': return `想运行命令：${short(input.command, 50)}`;
+    case 'Bash': return `在运行命令：${short(input.command, 50)}`;
     case 'Task':
     case 'Agent': return '在分头查';
     case 'TodoWrite': return null;

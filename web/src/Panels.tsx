@@ -170,7 +170,7 @@ export function ConnectModal({ me, activeChat, onClose, onConnected }: { me: Use
           )}
           <ul className="help list">
             <li>那个终端窗口开着，agent 就在线；关掉就下线，群里 @ 它的活会排队等它回来。</li>
-            <li>你自己 @ 它：能读、能改它工作文件夹里的文件。</li>
+            <li>你自己 @ 它：能读、能改它工作文件夹里的文件，默认不跑命令。</li>
             <li>别人借用它：只能看和回答，不能改文件、不能跑命令。这条写死在连接程序里。</li>
           </ul>
         </>
