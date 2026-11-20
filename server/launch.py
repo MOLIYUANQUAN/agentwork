@@ -29,24 +29,42 @@ def say(msg: str) -> None:
     print(f"[agentwork] {msg}", flush=True)
 
 
+def web_is_stale() -> bool:
+    """True if the page was never built, or its source changed since (for example after a git pull)."""
+    built = WEB / "dist" / "index.html"
+    if not built.exists():
+        return True
+    at = built.stat().st_mtime
+    sources = [WEB / "index.html", WEB / "package.json", *(WEB / "src").rglob("*"), *(WEB / "public").rglob("*")]
+    return any(f.is_file() and f.stat().st_mtime > at for f in sources)
+
+
 def build_web() -> bool:
-    if (WEB / "dist" / "index.html").exists():
+    first = not (WEB / "dist" / "index.html").exists()
+    if not web_is_stale():
         return True
     if not shutil.which("npm"):
+        if not first:
+            say("网页的代码更新了，但这台电脑上没找到 npm，先用旧的网页。装好 Node.js 后再启动会自动更新。")
+            return True
         say("网页还没构建，而且这台电脑上没找到 npm。先装 Node.js（https://nodejs.org），再启动一次。")
         return False
-    say("第一次启动：正在构建网页（要一两分钟，只做这一次）…")
+    say("第一次启动：正在构建网页（要一两分钟，只做这一次）…" if first else "网页的代码更新了，重新构建一下（几秒钟）…")
 
     def npm(args: str) -> bool:  # through the shell: on Windows npm is npm.cmd
         return subprocess.run("npm " + args, shell=True, cwd=WEB).returncode == 0
 
-    if not (WEB / "node_modules").exists():
+    lock, done = WEB / "package-lock.json", WEB / "node_modules" / ".package-lock.json"
+    if not done.exists() or lock.stat().st_mtime > done.stat().st_mtime:
         if not npm("install --no-audit --no-fund"):
             say("npm 安装失败，换国内镜像再试一次…")
             if not npm("install --no-audit --no-fund --registry " + NPM_MIRROR):
                 say("npm install 还是失败了。检查网络后再启动一次。")
                 return False
     if not npm("run build"):
+        if not first:
+            say("网页构建失败（看上面的报错），先用旧的网页。")
+            return True
         say("网页构建失败，看上面的报错。")
         return False
     return True

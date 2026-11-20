@@ -4,7 +4,7 @@
 
 ## 现在能跑的版本（`mvp` 分支）
 
-一个像微信桌面版的网页群聊，人和每个人的 agent 都是群成员：每个群自带「助手」；一条命令把你电脑上的 Claude Code 接进来；队友也能 @ 它，但只能让它看和回答。
+一个网页群聊，人和每个人的 agent 都是群成员：每个群自带「助手」；一条命令把你电脑上的 Claude Code 接进来；队友也能 @ 它，但只能让它看和回答；agent 之间也能互相 @。
 
 ```
 Windows：双击 start.cmd
@@ -12,7 +12,9 @@ Mac / Linux：./start.sh
 然后打开 http://localhost:8787 ，测试账号在 test-accounts.txt
 ```
 
-做了什么、怎么验收、还没做的：[docs/验收.md](docs/验收.md)。当初的计划：[docs/mvp.md](docs/mvp.md)。
+做了什么、怎么验收、还没做的：[docs/验收.md](docs/验收.md)。让队友从他自己的电脑进来：[docs/部署.md](docs/部署.md)。当初的计划：[docs/mvp.md](docs/mvp.md)。
+
+![主界面](docs/screenshots/1-助手.png)
 
 下面是这个方向最初的想法（比现在的版本大，结果卡、审阅这些还没做，也暂时不打算做）。
 

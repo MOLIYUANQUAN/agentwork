@@ -178,7 +178,7 @@ async def on_user_message(chat_id: int, question: dict, sender: dict, mention_id
 async def _after_reply(reply: dict, meta: dict) -> None:
     """An agent finished and its answer @s other agents: hand over to them, on behalf
     of the person who started the chain, up to MAX_HOPS hand-offs."""
-    if reply["author_type"] != "agent" or not reply.get("requested_by"):
+    if MAX_HOPS <= 0 or reply["author_type"] != "agent" or not reply.get("requested_by"):
         return
     agents = db.chat_agents(reply["chat_id"])
     wanted = _mentioned(agents, reply["text"] or "", skip_id=reply["author_id"])[:MAX_FANOUT]
@@ -252,7 +252,7 @@ async def stop_reply(m: dict, by: dict) -> bool:
 
 def _how_to_call_others(chat_id: int, me: dict) -> str:
     others = [a["name"] for a in db.chat_agents(chat_id) if a["id"] != me["id"]]
-    if not others:
+    if not others or MAX_HOPS <= 0:
         return ""
     return (
         f"群里还有别的 agent：{'、'.join(others)}。确实需要其中一个接手或帮你核对时，在回答里写「@它的名字」（例如 @{others[0]}），"
