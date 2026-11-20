@@ -63,6 +63,9 @@ async function ask(page, agentName, text, shotName) {
   await box.click();
   await box.pressSequentially('@');
   await page.locator('.at-pop').waitFor();
+  // 样式没被全局规则带歪：列表里的名字应该和正文一个颜色，不是灰的
+  const colors = await page.evaluate(() => [getComputedStyle(document.querySelector('.at-name')).color, getComputedStyle(document.body).color]);
+  if (colors[0] !== colors[1]) throw new Error(`@ 列表里名字的颜色不对：${colors[0]}（正文是 ${colors[1]}）`);
   if (shotName) {
     await shot(page, shotName);
     await page.locator('.at-pop').waitFor();
