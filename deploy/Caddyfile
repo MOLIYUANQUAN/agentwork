@@ -1,0 +1,5 @@
+# 域名从 deploy/.env 里的 DOMAIN 读。Caddy 自动处理 https 和 WebSocket。
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy agentwork:8787
+}

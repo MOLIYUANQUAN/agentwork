@@ -1,0 +1,11 @@
+.git
+.venv
+data
+node_modules
+web/node_modules
+web/dist
+tests
+docs
+test-accounts.txt
+.env
+**/__pycache__

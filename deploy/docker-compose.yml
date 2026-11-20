@@ -1,0 +1,29 @@
+# 一台有公网 IP 和域名的服务器上：
+#   cd deploy && cp .env.example .env   （填好域名等）
+#   docker compose up -d --build
+# Caddy 会自动申请和续期 https 证书。详细步骤见 docs/部署.md。
+services:
+  agentwork:
+    build: ..
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - agentwork-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - agentwork
+
+volumes:
+  agentwork-data:
+  caddy-data:

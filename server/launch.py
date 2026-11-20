@@ -70,7 +70,13 @@ def pick_engine() -> None:
         say("模拟模式（AGENTWORK_FAKE_AI=1）：agent 的回答是假的，只用来走通流程。")
     elif forced is not None:
         os.environ.pop("AGENTWORK_FAKE_AI", None)
-        say("真实模式（AGENTWORK_FAKE_AI=0）。")
+        if (os.getenv("ANTHROPIC_API_KEY") or "").strip():
+            say("真实模式：内置助手用 ANTHROPIC_API_KEY。")
+        elif shutil.which("claude"):
+            say("真实模式：内置助手用这台电脑上的 Claude Code。")
+        else:
+            say("真实模式，但这台机器上既没有 ANTHROPIC_API_KEY 也没有 Claude Code：内置助手被 @ 时会说自己还没接上模型。")
+            say("  大家自己接入的 agent 不受影响。要让助手能用，设置 ANTHROPIC_API_KEY 后重启。")
     elif (os.getenv("ANTHROPIC_API_KEY") or "").strip():
         say("内置助手用 .env 里的 ANTHROPIC_API_KEY。")
     elif claude_logged_in():
@@ -98,7 +104,11 @@ def open_when_up(url: str) -> None:
             time.sleep(0.2)
             continue
         break
-    say(f"打开 {url}（浏览器没自动弹出来就手动打开）。关掉这个窗口就是关掉服务。")
+    public = (os.getenv("AGENTWORK_PUBLIC_URL") or "").strip()
+    if public:
+        say(f"服务起来了。大家访问的地址：{public}")
+    else:
+        say(f"打开 {url}（浏览器没自动弹出来就手动打开）。关掉这个窗口就是关掉服务。")
     if os.getenv("AGENTWORK_NO_BROWSER") != "1":
         try:
             webbrowser.open(url)
@@ -124,10 +134,11 @@ def main() -> int:
     if not build_web():
         return 1
 
-    from . import seed
+    if os.getenv("AGENTWORK_NO_SEED") != "1":  # on a public server nobody wants ready-made test accounts
+        from . import seed
 
-    if seed.seed():
-        say(f"建好了两个测试账号和「测试群」，账号密码在 {seed.ACCOUNTS_FILE}")
+        if seed.seed():
+            say(f"建好了两个测试账号和「测试群」，账号密码在 {seed.ACCOUNTS_FILE}")
     pick_engine()
 
     import uvicorn
