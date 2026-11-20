@@ -309,13 +309,13 @@ function claudeOnce(job, cwd, resumeId) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn('claude', claudeArgs(job.mode, resumeId), {
-        cwd,
-        // Windows 上 claude 是 claude.cmd，要经过 shell。参数全是固定的开关，提示词只走 stdin。
-        shell: process.platform === 'win32',
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      const argv = claudeArgs(job.mode, resumeId);
+      const opts = { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] };
+      // Windows 上 claude 可能是 claude.cmd，要经过 shell。参数全是固定的开关（没有空格、没有用户输入），
+      // 提示词只走 stdin，所以拼成一条命令是安全的。
+      child = process.platform === 'win32'
+        ? spawn('claude ' + argv.join(' '), { ...opts, shell: true })
+        : spawn('claude', argv, opts);
     } catch (e) {
       resolve({ error: looksNotInstalled(e.message) ? NOT_INSTALLED : `启动 Claude Code 失败：${e.message}` });
       return;

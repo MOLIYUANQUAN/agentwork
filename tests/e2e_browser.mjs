@@ -57,11 +57,12 @@ async function login(page, who) {
   await page.locator('.side').waitFor();
 }
 
-async function ask(page, agentName, text) {
+async function ask(page, agentName, text, shotName) {
   const box = page.locator('.composer textarea');
   await box.click();
   await box.pressSequentially('@');
   await page.locator('.at-pop').waitFor();
+  if (shotName) await shot(page, shotName);
   await page.locator('.at-row', { hasText: agentName }).first().click();
   await box.pressSequentially(text);
   return box;
@@ -181,8 +182,7 @@ try {
   await login(b, '尹昊');
   await b.locator('.chat-row', { hasText: '测试群' }).click();
   await b.locator('.agent-msg').last().waitFor();
-  await ask(b, 'Zeep 的 Claude', '也帮我看一下');
-  await shot(b, 'guest-at-popup');
+  await ask(b, 'Zeep 的 Claude', '也帮我看一下', 'guest-at-popup');
   await sendAndWait(b, 'done');
   const guest = lastAgentMsg(b);
   await guest.locator('.tag.guest').waitFor();
@@ -192,11 +192,13 @@ try {
 
   await b.getByRole('button', { name: '成员' }).click();
   await b.locator('.drawer').waitFor();
+  await b.waitForTimeout(350);
   await shot(b, 'members-guest');
   await b.locator('.drawer .icon-btn').click();
 
   await a.getByRole('button', { name: '成员' }).click();
   await a.locator('.drawer').waitFor();
+  await a.waitForTimeout(350);
   await shot(a, 'members-owner');
   await a.locator('.drawer').getByRole('radio', { name: '只有我能 @' }).click();
   await a.locator('.drawer').getByRole('radio', { name: '只有我能 @', checked: true }).waitFor();
@@ -257,6 +259,20 @@ try {
   await a.getByRole('tab', { name: /聊天/ }).click();
   step('实时收消息、未读红点、通讯录');
 
+  const ctxC = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'zh-CN' });
+  const c = await ctxC.newPage();
+  await c.goto(link);
+  await c.locator('.notice').waitFor();
+  await c.getByLabel(/名字/).fill('陈宇涵');
+  await c.getByLabel('邮箱').fill('yuhan@example.com');
+  await c.getByLabel(/密码/).fill('test-pass-1');
+  await shot(c, 'register-from-invite');
+  await c.getByRole('button', { name: '注册并进入' }).click();
+  await c.getByRole('button', { name: /身份加入/ }).click();
+  await c.locator('.chat-title span', { hasText: '3 人' }).waitFor();
+  step('没账号的人打开邀请链接 → 注册 → 直接进群');
+  await ctxC.close();
+
   console.log('深色模式和手机');
   const ctxD = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'dark', locale: 'zh-CN', storageState: await ctxA.storageState() });
   const d = await ctxD.newPage();
@@ -265,6 +281,7 @@ try {
   await d.locator('.agent-msg').last().waitFor();
   await shot(d, 'dark');
   await d.getByRole('button', { name: '成员' }).click();
+  await d.waitForTimeout(350);
   await shot(d, 'dark-members');
   const ctxM = await browser.newContext({ viewport: { width: 390, height: 780 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, locale: 'zh-CN', storageState: await ctxB.storageState() });
   const m = await ctxM.newPage();

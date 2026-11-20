@@ -242,6 +242,7 @@ function Main({ boot, openChat, onLogout }: { boot: Bootstrap; openChat: number 
         void refreshBoot();
         return;
       }
+      if (e.type === 'agent' && e.agent.owner?.id === sRef.current.me.id && !sRef.current.myAgents.some((x) => x.id === e.agent.id)) void refreshBoot();
       if (e.type === 'message' && !sRef.current.chats.some((c) => c.id === e.message.chat_id)) void refreshBoot();
       dispatch({ type: 'event', event: e });
     };
