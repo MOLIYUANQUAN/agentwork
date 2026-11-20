@@ -1,0 +1,8 @@
+.venv/
+data/
+.env
+node_modules/
+web/dist/
+__pycache__/
+*.pyc
+test-accounts.txt
