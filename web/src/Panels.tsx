@@ -20,10 +20,12 @@ function useAsync() {
   return { busy, err, run };
 }
 
-function CopyButton({ text, label = '复制' }: { text: string; label?: string }) {
+function CopyButton({ text, label = '复制', autoFocus = false }: { text: string; label?: string; autoFocus?: boolean }) {
   const [done, setDone] = useState(false);
   return (
     <button
+      type="button"
+      data-autofocus={autoFocus ? '' : undefined}
       className={'btn' + (done ? ' ok' : ' primary')}
       onClick={async () => {
         if (await copyText(text)) {
@@ -71,12 +73,12 @@ export function InviteModal({ detail, me, onClose, onChanged }: { detail: ChatDe
   const { busy, err, run } = useAsync();
   const [confirmReset, setConfirmReset] = useState(false);
   return (
-    <Modal title={`邀请加入「${detail.chat.name}」`} onClose={onClose} width={460}>
+    <Modal title={`邀请加入「${detail.chat.name}」`} onClose={onClose} width={520}>
       <p className="help">把这个链接发给队友。对方打开，登录或注册后点一下就进群。只有拿到链接的人能进来。</p>
       <div className="copy-row">
         <LinkIcon size={16} />
         <input readOnly value={link} onFocus={(e) => e.target.select()} aria-label="邀请链接" />
-        <CopyButton text={link} label="复制链接" />
+        <CopyButton text={link} label="复制链接" autoFocus />
       </div>
       {/^(localhost|127\.)/.test(location.hostname) && (
         <p className="help muted">现在是在本机（localhost）跑的，这个链接只有这台电脑能打开。要给别人用，得把服务放到大家都能访问的地址上（见 docs/部署.md）。</p>

@@ -1,7 +1,8 @@
 // 到处都用的小零件：头像、标签、弹窗、图标、时间、Markdown。
-import { ReactNode, useEffect, useMemo, useRef } from 'react';
+import { MouseEvent, ReactNode, useEffect, useMemo, useRef } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+import { copyText } from './api';
 import type { Agent, Face } from './api';
 
 // ---------------------------------------------------------------- avatars
@@ -163,7 +164,7 @@ export function Modal({ title, onClose, children, width = 420 }: { title: string
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
-    const first = box.current?.querySelector<HTMLElement>('input, textarea, button.primary');
+    const first = box.current?.querySelector<HTMLElement>('[data-autofocus]') ?? box.current?.querySelector<HTMLElement>('input, textarea, button.primary');
     first?.focus();
     return () => window.removeEventListener('keydown', onKey);
     // 只在打开时聚焦一次
@@ -263,9 +264,23 @@ export function renderMarkdown(text: string, names: string[] = []): string {
     FORBID_ATTR: ['style', 'class', 'id'],
   });
   const re = mentionRegex(names);
-  if (!re || !clean.includes('@')) return clean;
+  const hasCode = clean.includes('<pre');
+  if (!hasCode && (!re || !clean.includes('@'))) return clean;
   const box = document.createElement('template');
   box.innerHTML = clean;
+  // 代码块右上角加一个「复制」（点击在 Markdown 组件里统一处理）
+  for (const pre of Array.from(box.content.querySelectorAll('pre'))) {
+    const wrap = document.createElement('div');
+    wrap.className = 'code';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'code-copy';
+    btn.setAttribute('data-copy', '');
+    btn.textContent = '复制';
+    pre.replaceWith(wrap);
+    wrap.append(btn, pre);
+  }
+  if (!re || !clean.includes('@')) return box.innerHTML;
   const walker = document.createTreeWalker(box.content, NodeFilter.SHOW_TEXT);
   const targets: Text[] = [];
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -295,5 +310,15 @@ export function renderMarkdown(text: string, names: string[] = []): string {
 
 export function Markdown({ text, names }: { text: string; names?: string[] }) {
   const html = useMemo(() => renderMarkdown(text, names), [text, names]);
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy]');
+    const code = btn?.parentElement?.querySelector('pre');
+    if (!btn || !code) return;
+    void copyText(code.textContent || '').then((ok) => {
+      if (!ok) return;
+      btn.textContent = '已复制';
+      window.setTimeout(() => { btn.textContent = '复制'; }, 1500);
+    });
+  };
+  return <div className="md" onClick={onClick} dangerouslySetInnerHTML={{ __html: html }} />;
 }

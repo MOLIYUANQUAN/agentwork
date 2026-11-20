@@ -144,6 +144,9 @@ try {
   await shot(a, 'helper-streaming');
   await waitStatus(a, 'done');
   await lastAgentMsg(a).locator('.msg-foot', { hasText: '用时' }).waitFor();
+  await lastAgentMsg(a).locator('.code').hover();
+  await lastAgentMsg(a).locator('.code-copy').click();
+  if ((await a.evaluate(() => navigator.clipboard.readText())).trim() !== "print('hello from agentwork')") throw new Error('代码块的「复制」没复制到代码');
   await shot(a, 'helper-done');
   step('助手边想边出字，做完显示用时');
 

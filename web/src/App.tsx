@@ -257,6 +257,7 @@ function Main({ boot, openChat, onLogout }: { boot: Bootstrap; openChat: number 
       }
       if (e.type === 'agent' && e.agent.owner?.id === sRef.current.me.id && !sRef.current.myAgents.some((x) => x.id === e.agent.id)) void refreshBoot();
       if (e.type === 'message' && !sRef.current.chats.some((c) => c.id === e.message.chat_id)) void refreshBoot();
+      notify(e, sRef.current);
       dispatch({ type: 'event', event: e });
     };
     const live = new Live(onEvent, (ok, again) => {
@@ -319,6 +320,8 @@ function Main({ boot, openChat, onLogout }: { boot: Bootstrap; openChat: number 
   const send = useCallback(async (text: string, mentions: number[]) => {
     const id = sRef.current.activeId;
     if (id === null) return;
+    // 第一次叫 agent 干活时问一次：干完了要不要用系统通知提醒你（你切到别的窗口时才会弹）
+    if (mentions.length && 'Notification' in window && Notification.permission === 'default') void Notification.requestPermission();
     const message = await api<Msg>('POST', `/api/chats/${id}/messages`, { text, mentions });
     dispatch({ type: 'sent', message });
   }, []);
@@ -467,6 +470,31 @@ function Main({ boot, openChat, onLogout }: { boot: Bootstrap; openChat: number 
       {modal?.kind === 'agent' && modalAgent && <AgentModal agent={modalAgent} activeChat={active} onClose={() => setModal(null)} onChanged={refreshAll} />}
     </div>
   );
+}
+
+// ---------------------------------------------------------------- system notifications
+
+/** 你不在这个窗口时：你叫的 agent 干完了，或者有人 @ 你，弹一条系统通知。 */
+function notify(e: ServerEvent, s: { me: User; chats: ChatSummary[] }) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
+  let m: Msg | null = null;
+  let title = '';
+  if (e.type === 'message_update' && e.message.author_type === 'agent' && e.message.requested_by === s.me.id && (e.message.status === 'done' || e.message.status === 'error')) {
+    m = e.message;
+    title = `${m.author?.name ?? 'agent'} ${m.status === 'done' ? '干完了' : '没做成'}`;
+  } else if (e.type === 'message' && e.message.author_type === 'user' && e.message.author_id !== s.me.id && e.message.text.includes('@' + s.me.name)) {
+    m = e.message;
+    title = `${m.author?.name ?? '有人'} @ 了你`;
+  }
+  if (!m) return;
+  const chat = s.chats.find((c) => c.id === m!.chat_id);
+  try {
+    const n = new Notification(title, { body: `${chat ? chat.name + '：' : ''}${m.text.replace(/\s+/g, ' ').slice(0, 80)}`, tag: `agentwork-${m.id}`, icon: '/favicon.svg' });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch {
+    /* 有的浏览器不让在这里弹，算了 */
+  }
 }
 
 // ---------------------------------------------------------------- contacts tab
