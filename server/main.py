@@ -31,12 +31,29 @@ COOKIE = "aw_session"
 WEB_DIST = ROOT / "web" / "dist"
 CONNECTOR = ROOT / "connector" / "agentwork.mjs"
 PAIR_TTL = 15 * 60
+CONNECTOR_SILENCE = 70
 
 
 @app.on_event("startup")
 async def _startup() -> None:
     db.builtin_agent()
     agents.recover_after_restart()
+
+
+_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    """Run in the background; keep a reference so it isn't garbage-collected, and log if it blows up."""
+    t = asyncio.create_task(coro)
+    _tasks.add(t)
+
+    def done(t: asyncio.Task) -> None:
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            print(f"[agentwork] 后台任务出错：{t.exception()!r}", flush=True)
+
+    t.add_done_callback(done)
 
 
 # ---------------------------------------------------------------- auth
@@ -283,7 +300,7 @@ async def send_message(chat_id: int, body: MessageIn, request: Request):
     db.run("UPDATE chat_members SET last_read=? WHERE chat_id=? AND user_id=?", (mid, chat_id, me["id"]))
     m = db.get_message(mid)
     await hub.to_chat(chat_id, {"type": "message", "message": db.message_public(m)})
-    asyncio.create_task(agents.on_user_message(chat_id, m, me, body.mentions))
+    _spawn(agents.on_user_message(chat_id, m, me, body.mentions))
     return db.message_public(m)
 
 
@@ -570,6 +587,7 @@ async def ws_agent(ws: WebSocket):
                 await old.close()
             except Exception:
                 pass
+            await agents.connector_gone(agent["id"])  # whatever the old one was doing is lost
         hub.connectors[agent["id"]] = ws
         db.run("UPDATE agents SET machine=?, workdir=?, last_seen=? WHERE id=?",
                (str(first.get("machine", ""))[:60], str(first.get("workdir", ""))[:300], db.now(), agent["id"]))
@@ -580,7 +598,8 @@ async def ws_agent(ws: WebSocket):
         await hub.to_everyone_who_sees_agent(agent["id"], {"type": "agent", "agent": _agent_out(a)})
         await agents.flush_queue(agent["id"])
         while True:
-            data = json.loads(await ws.receive_text())
+            # the connector pings every 20s; silence this long means the computer slept or lost network
+            data = json.loads(await asyncio.wait_for(ws.receive_text(), timeout=CONNECTOR_SILENCE))
             if data.get("type") == "ping":
                 db.run("UPDATE agents SET last_seen=? WHERE id=?", (db.now(), agent["id"]))
                 await ws.send_text('{"type":"pong"}')
@@ -598,6 +617,10 @@ async def ws_agent(ws: WebSocket):
             if a:
                 await hub.to_everyone_who_sees_agent(agent["id"], {"type": "agent", "agent": _agent_out(a)})
                 await agents.connector_gone(agent["id"])
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------- web app

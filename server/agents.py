@@ -24,9 +24,11 @@ from .hub import hub
 MODEL = os.getenv("AGENTWORK_MODEL", "claude-opus-5-5")
 CONTEXT_FIRST = 20   # messages of context the first time an agent is called in a chat
 CONTEXT_MAX = 30     # cap on "what happened since you last spoke"
+CLI_TIMEOUT = 5 * 60  # seconds the builtin helper may spend in the local Claude Code
 
 # live text of replies that are still streaming, so we don't hit sqlite per token
 _live: dict[int, dict[str, Any]] = {}
+_running: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------- helpers
@@ -162,7 +164,9 @@ async def on_user_message(chat_id: int, question: dict, sender: dict, mention_id
             continue
         if a["kind"] == "builtin":
             m = await _new_reply(chat_id, a, question, sender, "thinking", {"started": time.time(), "where": "server"})
-            asyncio.create_task(_run_builtin(m, a, question, sender))
+            task = asyncio.create_task(_run_builtin(m, a, question, sender))
+            _running.add(task)  # keep a reference until it finishes
+            task.add_done_callback(_running.discard)
             continue
         owner = db.one("SELECT * FROM users WHERE id=?", (a["owner_id"],))
         is_owner = owner and owner["id"] == sender["id"]
@@ -323,6 +327,9 @@ async def claude_cli_events(args: list[str], prompt: str, cwd: str) -> AsyncIter
             else:
                 p = subprocess.Popen([exe, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT)
+            killer = threading.Timer(CLI_TIMEOUT, p.kill)  # never let a stuck CLI spin a reply forever
+            killer.daemon = True
+            killer.start()
             try:
                 p.stdin.write(prompt.encode("utf-8"))
                 p.stdin.close()
@@ -338,6 +345,7 @@ async def claude_cli_events(args: list[str], prompt: str, cwd: str) -> AsyncIter
                     ev = None
                 put(ev if isinstance(ev, dict) else {"type": "_raw", "text": line[:500]})
             p.wait(timeout=30)
+            killer.cancel()
         except Exception as e:  # surface as a result event
             put({"type": "result", "is_error": True, "result": str(e)})
         finally:

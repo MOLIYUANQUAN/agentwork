@@ -258,6 +258,13 @@ async def main() -> None:
     assert done["status"] == "done" and done["id"] == q["message"]["id"] and done["meta"]["mode"] == "guest"
     ok("电脑不在线 → 排队；连接程序不带参数重连 → 自动开始并做完")
 
+    second = start_connector(home)  # the same agent connects again: the old one bows out, the agent stays online
+    assert conn.wait(timeout=10) == 0
+    conn = second
+    await asyncio.sleep(0.3)
+    assert (await a.api("GET", "/api/bootstrap"))["my_agents"][0]["online"] is True
+    ok("同一个 agent 连了两次：旧的自己退出，新的接手")
+
     m = a.mark()
     await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "@Zeep 的 CC 干到一半会怎样", "mentions": [aid]})
     await a.wait(lambda e: e["type"] == "delta", since=m)
