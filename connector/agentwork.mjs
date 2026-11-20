@@ -190,6 +190,9 @@ function onServer(msg) {
     case 'job':
       enqueue(msg);
       break;
+    case 'cancel':
+      cancel(msg.job_id);
+      break;
     case 'revoked':
     case 'auth_failed':
       stopped = true;
@@ -211,6 +214,20 @@ function onServer(msg) {
 
 const waiting = [];
 const running = new Map(); // job_id -> chat_id
+const cancelled = new Set(); // 群里有人点了「停止」的活
+const children = new Map(); // job_id -> 正在跑的 claude 进程
+
+function cancel(jobId) {
+  const i = waiting.findIndex((j) => j.job_id === jobId);
+  if (i >= 0) {
+    waiting.splice(i, 1);
+    return;
+  }
+  if (!running.has(jobId)) return;
+  cancelled.add(jobId);
+  const child = children.get(jobId);
+  if (child) killTree(child);
+}
 
 function enqueue(job) {
   waiting.push(job);
@@ -227,6 +244,8 @@ function pump() {
       send({ type: 'error', job_id: job.job_id, error: `连接程序出错：${e.message}` });
     }).finally(() => {
       running.delete(job.job_id);
+      cancelled.delete(job.job_id);
+      children.delete(job.job_id);
       pump();
     });
   }
@@ -238,7 +257,9 @@ async function runJob(job) {
   const t0 = Date.now();
   const r = fake ? await runFake(job) : await runClaude(job);
   const secs = Math.round((Date.now() - t0) / 1000);
-  if (r.error) {
+  if (cancelled.has(job.job_id)) {
+    log(`群里有人叫停了（${secs} 秒）。`);
+  } else if (r.error) {
     log(`没做成（${secs} 秒）：${short(r.error, 100)}`);
     send({ type: 'error', job_id: job.job_id, error: r.error });
   } else {
@@ -333,6 +354,7 @@ function claudeOnce(job, cwd, resumeId) {
       return;
     }
 
+    children.set(job.job_id, child);
     let buf = '';
     let plain = ''; // stdout 里不是 JSON 的行（比如「Not logged in」）
     let sawEvent = false;
@@ -450,12 +472,17 @@ async function runClaude(job) {
 async function runFake(job) {
   const cwd = workdirFor(job);
   const id = job.job_id;
-  const asked = short((job.prompt.match(/@ 了你：\n([\s\S]*?)\n\n/) || [])[1] || '', 80);
+  const question = String(job.question ?? '');
+  const asked = short(question.replace(/@/g, ''), 80);
+  const stop = () => cancelled.has(id);
   await sleep(600);
+  if (stop()) return {};
   send({ type: 'step', job_id: id, step: '在找文件 **/*.md' });
   await sleep(500);
+  if (stop()) return {};
   send({ type: 'step', job_id: id, step: '在读 README.md' });
   await sleep(500);
+  if (stop()) return {};
   let tail;
   if (job.mode === 'owner') {
     const note = path.join(cwd, '模拟笔记.md');
@@ -466,8 +493,12 @@ async function runFake(job) {
   } else {
     tail = `这次是 **${job.requester}** 借用我，所以我**只能看和回答**，不能改文件、不能跑命令。要改东西，请我的主人来 @ 我。`;
   }
-  const reply = `收到：「${asked}」\n\n这是**模拟模式**的回答，没有真的调用 Claude Code。\n\n- 工作文件夹：\`${cwd}\`\n- ${tail}\n\n登录 Claude Code 之后，这里就是它真正的回答。`;
+  let reply = `收到：「${asked}」\n\n这是**模拟模式**的回答，没有真的调用 Claude Code。\n\n- 工作文件夹：\`${cwd}\`\n- ${tail}\n\n登录 Claude Code 之后，这里就是它真正的回答。`;
+  // 不用真模型也能试「agent 叫 agent」：问题里写 叫上「agent 名字」，模拟回答就会 @ 它
+  const other = [...question.matchAll(/叫上「(.+?)」/g)].map((m) => m[1]).find((n) => n !== job.agent_name);
+  if (other) reply += `\n\n@${other} 你也看一下。`;
   for (let i = 0; i < reply.length; i += 5) {
+    if (stop()) return {};
     send({ type: 'delta', job_id: id, text: reply.slice(i, i + 5) });
     await sleep(35);
   }

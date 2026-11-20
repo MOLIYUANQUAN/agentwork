@@ -139,7 +139,8 @@ def check_pw(pw: str, stored: str) -> bool:
         return False
 
 
-USER_COLORS = ["#E8590C", "#2F9E44", "#1971C2", "#9C36B5", "#C2255C", "#0C8599", "#5F3DC4", "#E67700"]
+# calm, readable with white initials, easy to tell apart
+USER_COLORS = ["#E0704F", "#3B9B78", "#4A7FD6", "#9068D8", "#D2668F", "#3A9EAE", "#C28A2C", "#6C7A96"]
 
 
 def create_user(name: str, email: str, password: str) -> int:

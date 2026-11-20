@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -25,10 +26,13 @@ MODEL = os.getenv("AGENTWORK_MODEL", "claude-opus-5-5")
 CONTEXT_FIRST = 20   # messages of context the first time an agent is called in a chat
 CONTEXT_MAX = 30     # cap on "what happened since you last spoke"
 CLI_TIMEOUT = 5 * 60  # seconds the builtin helper may spend in the local Claude Code
+MAX_HOPS = int(os.getenv("AGENTWORK_MAX_HOPS", "3"))  # agent → agent hand-offs after a person's @
+MAX_FANOUT = 3       # agents one agent reply may call at once
 
 # live text of replies that are still streaming, so we don't hit sqlite per token
 _live: dict[int, dict[str, Any]] = {}
 _running: set[asyncio.Task] = set()
+_builtin_tasks: dict[int, asyncio.Task] = {}  # reply id -> the task producing it, so it can be stopped
 
 
 # ---------------------------------------------------------------- helpers
@@ -141,6 +145,8 @@ async def _finish(m: dict, text: str | None, extra: dict | None = None, status: 
     final = text if text is not None else live["text"]
     m2 = db.update_message(m["id"], text=final, status=status, meta=meta)
     await _push(m2)
+    if status == "done" and not meta.get("declined") and not meta.get("stopped"):
+        await _after_reply(m2, meta)
 
 
 async def _fail(m: dict, why: str) -> None:
@@ -149,36 +155,76 @@ async def _fail(m: dict, why: str) -> None:
 
 # ---------------------------------------------------------------- entry point
 
-async def on_user_message(chat_id: int, question: dict, sender: dict, mention_ids: list[int]) -> None:
-    agents = db.chat_agents(chat_id)
-    text = question["text"] or ""
-    wanted = set(mention_ids)
-    # also by name; longest names first so "@助手2" doesn't also call "助手"
+def _mentioned(agents: list[dict], text: str, skip_id: int | None = None) -> list[int]:
+    """Ids of the agents @-mentioned in text, in order of appearance. Longest names
+    are matched first so "@助手2" doesn't also call "助手"."""
+    found: list[tuple[int, int]] = []
     rest = text
     for a in sorted(agents, key=lambda x: -len(x["name"])):
-        if f"@{a['name']}" in rest:
-            wanted.add(a["id"])
-            rest = rest.replace(f"@{a['name']}", " ")
-    for a in agents:
-        if a["id"] not in wanted:
-            continue
+        at = rest.find(f"@{a['name']}")
+        if at >= 0:
+            if a["id"] != skip_id:
+                found.append((at, a["id"]))
+            rest = rest.replace(f"@{a['name']}", "\0" * (len(a["name"]) + 1))
+    return [aid for _, aid in sorted(found)]
+
+
+async def on_user_message(chat_id: int, question: dict, sender: dict, mention_ids: list[int]) -> None:
+    agents = db.chat_agents(chat_id)
+    wanted = set(mention_ids) | set(_mentioned(agents, question["text"] or ""))
+    await _call_agents(chat_id, question, sender, [a for a in agents if a["id"] in wanted], hop=0, via=None)
+
+
+async def _after_reply(reply: dict, meta: dict) -> None:
+    """An agent finished and its answer @s other agents: hand over to them, on behalf
+    of the person who started the chain, up to MAX_HOPS hand-offs."""
+    if reply["author_type"] != "agent" or not reply.get("requested_by"):
+        return
+    agents = db.chat_agents(reply["chat_id"])
+    wanted = _mentioned(agents, reply["text"] or "", skip_id=reply["author_id"])[:MAX_FANOUT]
+    if not wanted:
+        return
+    requester = db.one("SELECT * FROM users WHERE id=?", (reply["requested_by"],))
+    if not requester or not db.is_member(reply["chat_id"], requester["id"]):
+        return
+    hop = int(meta.get("hop") or 0) + 1
+    if hop > MAX_HOPS:
+        mid = db.run(
+            "INSERT INTO messages(chat_id, author_type, author_id, text, status, created) VALUES(?, 'system', NULL, ?, 'done', ?)",
+            (reply["chat_id"], f"agent 之间已经连着接了 {MAX_HOPS} 轮话，先停在这里。要继续的话，你来 @ 一下。", db.now()),
+        )
+        await hub.to_chat(reply["chat_id"], {"type": "message", "message": db.message_public(db.get_message(mid))})
+        return
+    via = next((a for a in agents if a["id"] == reply["author_id"]), None)
+    by_id = {a["id"]: a for a in agents}
+    await _call_agents(reply["chat_id"], reply, requester, [by_id[i] for i in wanted], hop=hop, via=via)
+
+
+async def _call_agents(chat_id: int, question: dict, sender: dict, targets: list[dict], hop: int, via: dict | None) -> None:
+    """Start a reply from each target agent. `sender` is always a person: when an agent
+    calls another agent, it does so on behalf of the person who started the chain, and
+    that person's rights (owner or borrower) are what count."""
+    chain = {"hop": hop, "via": via["name"]} if via else {}
+    for a in targets:
         if a["kind"] == "builtin":
-            m = await _new_reply(chat_id, a, question, sender, "thinking", {"started": time.time(), "where": "server"})
-            task = asyncio.create_task(_run_builtin(m, a, question, sender))
+            m = await _new_reply(chat_id, a, question, sender, "thinking", {"started": time.time(), "where": "server", **chain})
+            task = asyncio.create_task(_run_builtin(m, a, question, sender, via))
             _running.add(task)  # keep a reference until it finishes
+            _builtin_tasks[m["id"]] = task
             task.add_done_callback(_running.discard)
+            task.add_done_callback(lambda _t, mid=m["id"]: _builtin_tasks.pop(mid, None))
             continue
         owner = db.one("SELECT * FROM users WHERE id=?", (a["owner_id"],))
         is_owner = owner and owner["id"] == sender["id"]
         if a["share"] == "me" and not is_owner:
-            m = await _new_reply(chat_id, a, question, sender, "done", {"declined": True})
+            m = await _new_reply(chat_id, a, question, sender, "done", {"declined": True, **chain})
             await _finish(
                 m,
                 f"我现在只听 {owner['name']} 的。想借用我，请 {owner['name']} 在我的设置里打开「群里谁都能 @」。",
                 {"declined": True},
             )
             continue
-        meta = {"mode": "owner" if is_owner else "guest", "owner": owner["name"]}
+        meta = {"mode": "owner" if is_owner else "guest", "owner": owner["name"], **chain}
         if hub.online(a["id"]):
             meta["started"] = time.time()
             m = await _new_reply(chat_id, a, question, sender, "thinking", meta)
@@ -187,6 +233,37 @@ async def on_user_message(chat_id: int, question: dict, sender: dict, mention_id
                 await _push(db.get_message(m["id"]))
         else:
             await _new_reply(chat_id, a, question, sender, "queued", meta)
+
+
+async def stop_reply(m: dict, by: dict) -> bool:
+    """Someone in the group pressed 停止 on a reply that is queued or still being written."""
+    if m["author_type"] != "agent" or m["status"] not in ("queued", "thinking", "streaming"):
+        return False
+    agent = db.one("SELECT * FROM agents WHERE id=?", (m["author_id"],))
+    if agent and agent["kind"] == "builtin":
+        task = _builtin_tasks.pop(m["id"], None)
+        if task:
+            task.cancel()
+    elif agent:
+        await hub.to_connector(agent["id"], {"type": "cancel", "job_id": m["id"]})
+    await _finish(m, None, {"stopped": True, "stopped_by": by["name"]})
+    return True
+
+
+def _how_to_call_others(chat_id: int, me: dict) -> str:
+    others = [a["name"] for a in db.chat_agents(chat_id) if a["id"] != me["id"]]
+    if not others:
+        return ""
+    return (
+        f"群里还有别的 agent：{'、'.join(others)}。确实需要其中一个接手或帮你核对时，在回答里写「@它的名字」（例如 @{others[0]}），"
+        "它就会被叫到，并看到你这条回答。没必要就别 @；不要 @ 你自己。"
+    )
+
+
+def _who_asked(question: dict, sender: dict, via: dict | None) -> str:
+    if via:
+        return f"现在 agent「{via['name']}」在替 {sender['name']} 干活时 @ 了你，它说：\n{question['text']}"
+    return f"现在 {sender['name']} 在群里 @ 了你：\n{question['text']}"
 
 
 # ---------------------------------------------------------------- builtin
@@ -198,7 +275,7 @@ BUILTIN_SYSTEM = (
 )
 
 
-def _builtin_prompt(chat_id: int, question: dict, sender: dict) -> str:
+def _builtin_prompt(chat_id: int, question: dict, sender: dict, agent: dict, via: dict | None) -> str:
     chat = db.one("SELECT name FROM chats WHERE id=?", (chat_id,))
     people, agents = _names(chat_id)
     lines = context_lines(chat_id, question["id"], None)
@@ -206,16 +283,17 @@ def _builtin_prompt(chat_id: int, question: dict, sender: dict) -> str:
     return (
         f"群名：{chat['name']}\n群里的人：{'、'.join(people)}\n群里的 agent：{'、'.join(agents)}\n\n"
         f"群里最近的聊天（旧→新）：\n{ctx}\n\n"
-        f"现在 {sender['name']} @ 了你：\n{question['text']}"
-    )
+        f"{_who_asked(question, sender, via)}\n\n"
+        f"{_how_to_call_others(chat_id, agent)}"
+    ).rstrip()
 
 
-async def _run_builtin(m: dict, agent: dict, question: dict, sender: dict) -> None:
-    prompt = _builtin_prompt(m["chat_id"], question, sender)
+async def _run_builtin(m: dict, agent: dict, question: dict, sender: dict, via: dict | None = None) -> None:
+    prompt = _builtin_prompt(m["chat_id"], question, sender, agent, via)
     try:
         if os.getenv("AGENTWORK_FAKE_AI") == "1":
             engine = "fake"
-            async for kind, val in _fake_stream(question["text"]):
+            async for kind, val in _fake_stream(question["text"], agent["name"]):
                 await (_delta(m, val) if kind == "text" else _step(m, val))
             await _finish(m, None, {"engine": engine})
         elif (os.getenv("ANTHROPIC_API_KEY") or "").strip():
@@ -224,6 +302,8 @@ async def _run_builtin(m: dict, agent: dict, question: dict, sender: dict) -> No
             await _builtin_cli(m, prompt)
         else:
             await _fail(m, "内置助手还没接上大模型：在 agentwork 文件夹的 .env 里放 ANTHROPIC_API_KEY，或者在这台电脑上装好并登录 Claude Code。")
+    except asyncio.CancelledError:
+        return  # stopped by someone in the group; stop_reply() has already closed the message
     except Exception as e:  # never leave a reply spinning forever
         await _fail(m, f"出错了：{type(e).__name__}: {str(e)[:300]}")
 
@@ -315,6 +395,7 @@ async def claude_cli_events(args: list[str], prompt: str, cwd: str) -> AsyncIter
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     put = lambda ev: loop.call_soon_threadsafe(queue.put_nowait, ev)  # noqa: E731
+    proc: dict[str, subprocess.Popen] = {}
 
     def worker() -> None:
         try:
@@ -327,6 +408,7 @@ async def claude_cli_events(args: list[str], prompt: str, cwd: str) -> AsyncIter
             else:
                 p = subprocess.Popen([exe, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT)
+            proc["p"] = p
             killer = threading.Timer(CLI_TIMEOUT, p.kill)  # never let a stuck CLI spin a reply forever
             killer.daemon = True
             killer.start()
@@ -352,23 +434,35 @@ async def claude_cli_events(args: list[str], prompt: str, cwd: str) -> AsyncIter
             put(None)
 
     threading.Thread(target=worker, daemon=True).start()
-    while True:
-        ev = await queue.get()
-        if ev is None:
-            return
-        yield ev
+    try:
+        while True:
+            ev = await queue.get()
+            if ev is None:
+                return
+            yield ev
+    finally:  # stopped or failed half-way: don't leave the CLI running
+        p = proc.get("p")
+        if p and p.poll() is None:
+            p.kill()
 
 
-async def _fake_stream(question: str) -> AsyncIterator[tuple[str, str]]:
-    """Pretend to be a model: a couple of steps, then text in small chunks."""
+FAKE_CALL = re.compile(r"叫上「(.+?)」")
+
+
+async def _fake_stream(question: str, my_name: str = "助手") -> AsyncIterator[tuple[str, str]]:
+    """Pretend to be a model: text in small chunks. To try agent → agent hand-offs without a
+    model, write 叫上「agent 名字」 in the question: the fake answer then @s that agent."""
     await asyncio.sleep(0.8)
-    q = question.strip().replace("\n", " ")
+    q = question.strip().replace("\n", " ").replace("@", "")
     reply = (
         f"收到。你问的是：「{q[:80]}」。\n\n"
         "这是**模拟模式**的回答，没有真的调用模型。真实情况下我会：\n\n"
         "1. 先看群里最近在聊什么\n2. 给出结论\n3. 需要的话列出下一步\n\n"
         "```python\nprint('hello from agentwork')\n```"
     )
+    other = next((n for n in FAKE_CALL.findall(question) if n != my_name), None)
+    if other:
+        reply += f"\n\n@{other} 你也看一下。"
     for i in range(0, len(reply), 6):
         yield "text", reply[i:i + 6]
         await asyncio.sleep(0.04)
@@ -390,8 +484,13 @@ def _job_prompt(m: dict, agent: dict) -> tuple[str, str]:
     ]
     if lines:
         parts.append("群里最近聊了这些（旧→新，你上次回答之后的部分）：\n" + "\n".join(lines))
-    parts.append(f"现在 {requester['name']} 在群里 @ 了你：\n{question['text']}")
+    meta = json.loads(m.get("meta") or "{}")
+    via = {"name": meta["via"]} if meta.get("via") else None
+    parts.append(_who_asked(question, requester, via))
     parts.append("你的最后一条回答会原样发到群里。像同事在群里回话：先给结论，简洁，用 Markdown。默认用中文。")
+    call = _how_to_call_others(m["chat_id"], agent)
+    if call:
+        parts.append(call)
     if mode == "guest":
         parts.append(
             f"注意：这次是 {requester['name']} 借用你（你的主人是 {owner['name']}）。这次你只能读文件、搜索、查资料，"
@@ -416,6 +515,8 @@ async def _send_job(m: dict, agent: dict) -> bool:
         "chat_name": chat["name"],
         "mode": mode,
         "requester": requester["name"],
+        "agent_name": agent["name"],
+        "question": (db.get_message(m["reply_to"]) or {}).get("text", ""),
         "prompt": prompt,
     })
 

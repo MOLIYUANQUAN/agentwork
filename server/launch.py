@@ -133,7 +133,9 @@ def main() -> int:
     import uvicorn
 
     threading.Thread(target=open_when_up, args=(url,), daemon=True).start()
-    uvicorn.run("server.main:app", host=HOST, port=PORT, log_level="warning")
+    # behind a reverse proxy or tunnel, trust its X-Forwarded-* headers (set AGENTWORK_TRUSTED_PROXIES to its address, or *)
+    uvicorn.run("server.main:app", host=HOST, port=PORT, log_level="warning",
+                proxy_headers=True, forwarded_allow_ips=os.getenv("AGENTWORK_TRUSTED_PROXIES", "127.0.0.1"))
     return 0
 
 

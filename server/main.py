@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -32,6 +33,11 @@ WEB_DIST = ROOT / "web" / "dist"
 CONNECTOR = ROOT / "connector" / "agentwork.mjs"
 PAIR_TTL = 15 * 60
 CONNECTOR_SILENCE = 70
+SESSION_DAYS = 60
+# When the server sits behind a proxy or tunnel, say what address people actually type:
+PUBLIC_URL = (os.getenv("AGENTWORK_PUBLIC_URL") or "").strip().rstrip("/")
+# If set, registering needs this code (a simple gate for a private trial on a public server):
+SIGNUP_CODE = (os.getenv("AGENTWORK_SIGNUP_CODE") or "").strip()
 
 
 @app.on_event("startup")
@@ -65,8 +71,37 @@ def _sha(s: str) -> str:
 def _user_from_token(token: str | None) -> dict | None:
     if not token:
         return None
-    s = db.one("SELECT user_id FROM sessions WHERE token=?", (_sha(token),))
-    return db.one("SELECT * FROM users WHERE id=?", (s["user_id"],)) if s else None
+    s = db.one("SELECT user_id, created FROM sessions WHERE token=?", (_sha(token),))
+    if not s:
+        return None
+    if time.time() - s["created"] > SESSION_DAYS * 86400:
+        db.run("DELETE FROM sessions WHERE token=?", (_sha(token),))
+        return None
+    return db.one("SELECT * FROM users WHERE id=?", (s["user_id"],))
+
+
+_attempts: dict[str, list[float]] = {}
+
+
+def _throttle(key: str, limit: int, window: float, why: str) -> None:
+    """At most `limit` tries per `window` seconds for this key. In memory: enough for one process."""
+    now = time.time()
+    hits = [t for t in _attempts.get(key, []) if now - t < window]
+    if len(hits) >= limit:
+        raise HTTPException(429, why)
+    hits.append(now)
+    _attempts[key] = hits
+    if len(_attempts) > 5000:  # don't grow without bound
+        for k in [k for k, v in _attempts.items() if not v or now - v[-1] > 3600]:
+            _attempts.pop(k, None)
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "?"
+
+
+def _is_https(request: Request) -> bool:
+    return PUBLIC_URL.startswith("https://") or request.url.scheme == "https"
 
 
 def need_user(request: Request) -> dict:
@@ -76,16 +111,18 @@ def need_user(request: Request) -> dict:
     return u
 
 
-def _login(resp: Response, user_id: int) -> None:
+def _login(request: Request, resp: Response, user_id: int) -> None:
     token = secrets.token_urlsafe(32)
     db.run("INSERT INTO sessions(token, user_id, created) VALUES(?,?,?)", (_sha(token), user_id, db.now()))
-    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 60)
+    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", secure=_is_https(request),
+                    max_age=60 * 60 * 24 * SESSION_DAYS)
 
 
 class RegisterIn(BaseModel):
     name: str
     email: str
     password: str
+    code: str = ""
 
 
 class LoginIn(BaseModel):
@@ -93,8 +130,22 @@ class LoginIn(BaseModel):
     password: str
 
 
+@app.get("/api/config")
+def config():
+    """What the login page needs to know before anyone is logged in."""
+    return {"signup_code": bool(SIGNUP_CODE), "fake": _engine() == "fake"}
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
 @app.post("/api/register")
-def register(body: RegisterIn, resp: Response):
+def register(body: RegisterIn, request: Request, resp: Response):
+    _throttle(f"reg:{_ip(request)}", 20, 3600, "注册得太频繁了，过一会儿再试")
+    if SIGNUP_CODE and not hmac.compare_digest(body.code.strip(), SIGNUP_CODE):
+        raise HTTPException(403, "邀请码不对。这台服务器在内测，问建站的人要邀请码")
     name, email = body.name.strip(), body.email.strip().lower()
     if not name or len(name) > 20:
         raise HTTPException(400, "名字 1–20 个字")
@@ -105,16 +156,20 @@ def register(body: RegisterIn, resp: Response):
     if db.one("SELECT 1 FROM users WHERE email=?", (email,)):
         raise HTTPException(400, "这个邮箱已经注册过了，直接登录")
     uid = db.create_user(name, email, body.password)
-    _login(resp, uid)
+    _login(request, resp, uid)
     return {"user": db.user_public(db.one("SELECT * FROM users WHERE id=?", (uid,)))}
 
 
 @app.post("/api/login")
-def login(body: LoginIn, resp: Response):
-    u = db.one("SELECT * FROM users WHERE email=?", (body.email.strip().lower(),))
+def login(body: LoginIn, request: Request, resp: Response):
+    email = body.email.strip().lower()
+    _throttle(f"login:{_ip(request)}:{email}", 8, 600, "试的次数太多了，10 分钟后再来")
+    _throttle(f"login:{_ip(request)}", 60, 600, "试的次数太多了，10 分钟后再来")
+    u = db.one("SELECT * FROM users WHERE email=?", (email,))
     if not u or not db.check_pw(body.password, u["pw_hash"]):
         raise HTTPException(400, "邮箱或密码不对")
-    _login(resp, u["id"])
+    _attempts.pop(f"login:{_ip(request)}:{email}", None)
+    _login(request, resp, u["id"])
     return {"user": db.user_public(u)}
 
 
@@ -149,8 +204,24 @@ def _chat_summary(chat: dict, me: dict) -> dict:
         preview = {"who": who if last["author_type"] != "system" else "", "text": txt[:60], "at": last["created"]}
     return {
         "id": chat["id"], "name": chat["name"], "members": members, "agents": agent_count,
-        "unread": unread, "last": preview, "created": chat["created"],
+        "unread": unread, "last": preview, "created": chat["created"], "faces": _faces(chat["id"]),
     }
+
+
+def _faces(chat_id: int) -> list[dict]:
+    """Up to four members for the group's avatar: people first, then their agents, the helper last."""
+    out: list[dict] = [
+        {"kind": "user", "name": u["name"], "color": u["color"]}
+        for u in db.q(
+            "SELECT u.name, u.color FROM users u JOIN chat_members cm ON cm.user_id=u.id WHERE cm.chat_id=? ORDER BY cm.joined LIMIT 4",
+            (chat_id,),
+        )
+    ]
+    agents = db.chat_agents(chat_id)
+    for a in [x for x in agents if x["kind"] != "builtin"] + [x for x in agents if x["kind"] == "builtin"]:
+        owner = db.one("SELECT color FROM users WHERE id=?", (a["owner_id"],)) if a["owner_id"] else None
+        out.append({"kind": "agent", "name": a["name"], "color": owner["color"] if owner else None, "agent_kind": a["kind"]})
+    return out[:4]
 
 
 def _agent_out(a: dict) -> dict:
@@ -312,6 +383,29 @@ def mark_read(chat_id: int, body: ReadIn, request: Request):
     return {"ok": True}
 
 
+@app.post("/api/chats/{chat_id}/messages/{message_id}/stop")
+async def stop_message(chat_id: int, message_id: int, request: Request):
+    """Anyone in the group can stop an agent reply that is queued or still being written."""
+    me = need_user(request)
+    _need_member(chat_id, me)
+    m = db.get_message(message_id)
+    if not m or m["chat_id"] != chat_id:
+        raise HTTPException(404, "没有这条消息")
+    return {"stopped": await agents.stop_reply(m, me)}
+
+
+@app.post("/api/chats/{chat_id}/invite/reset")
+async def reset_invite(chat_id: int, request: Request):
+    me = need_user(request)
+    chat = _need_member(chat_id, me)
+    if chat["created_by"] != me["id"]:
+        raise HTTPException(403, "只有群主能重置邀请链接")
+    code = secrets.token_urlsafe(6)
+    db.run("UPDATE chats SET invite_code=? WHERE id=?", (code, chat_id))
+    await _chat_changed(chat_id)
+    return {"invite_code": code}
+
+
 @app.post("/api/chats/{chat_id}/agents")
 async def add_agent(chat_id: int, body: AgentRef, request: Request):
     me = need_user(request)
@@ -423,7 +517,7 @@ class ClaimIn(BaseModel):
 
 
 def _base_url(request: Request) -> str:
-    return str(request.base_url).rstrip("/")
+    return PUBLIC_URL or str(request.base_url).rstrip("/")
 
 
 @app.post("/api/agents/pair")
@@ -542,10 +636,19 @@ async def delete_agent(agent_id: int, request: Request):
 
 # ---------------------------------------------------------------- websockets
 
+def _same_origin(ws: WebSocket) -> bool:
+    """Browsers send Origin on WebSocket handshakes; refuse pages from other sites using our cookie."""
+    origin = ws.headers.get("origin")
+    if not origin:
+        return True  # not a browser
+    host = origin.split("://", 1)[-1]
+    return host == ws.headers.get("host") or (PUBLIC_URL and origin == PUBLIC_URL)
+
+
 @app.websocket("/ws")
 async def ws_browser(ws: WebSocket):
     me = _user_from_token(ws.cookies.get(COOKIE))
-    if not me:
+    if not me or not _same_origin(ws):
         await ws.close(code=4401)
         return
     await ws.accept()

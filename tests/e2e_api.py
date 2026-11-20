@@ -116,6 +116,14 @@ async def main() -> None:
     await fresh.aclose()
     ok("注册、重复邮箱、密码错、未登录、登录")
 
+    cfg = (await a.http.get("/api/config")).json()
+    assert cfg == {"signup_code": False, "fake": True} and (await a.http.get("/api/health")).json()["ok"]
+    guesser = httpx.AsyncClient(base_url=BASE)
+    codes = [(await guesser.post("/api/login", json={"email": "nobody@example.com", "password": f"guess-{i}"})).status_code for i in range(9)]
+    assert codes[:8] == [400] * 8 and codes[8] == 429, codes
+    await guesser.aclose()
+    ok("登录页要的配置；密码连错 8 次后被挡住")
+
     await a.open_ws()
     await b.open_ws()
     boot = await a.api("GET", "/api/bootstrap")
@@ -146,6 +154,14 @@ async def main() -> None:
     assert (await b.api("POST", f"/api/invite/{code}"))["chat_id"] == cid  # joining twice is harmless
     assert len((await a.api("GET", f"/api/chats/{cid}"))["members"]) == 2
     ok("邀请链接：看信息、加入、重复加入")
+
+    await b.api("POST", f"/api/chats/{cid}/invite/reset", expect=403)
+    fresh_code = (await a.api("POST", f"/api/chats/{cid}/invite/reset"))["invite_code"]
+    await b.api("GET", f"/api/invite/{code}", expect=404)
+    assert (await b.api("GET", f"/api/invite/{fresh_code}"))["member"] is True
+    faces = (await a.api("GET", "/api/bootstrap"))["chats"][0]["faces"]
+    assert [f["kind"] for f in faces] == ["user", "user", "agent"] and faces[0]["name"] == "Zeep"
+    ok("群主重置邀请链接，旧链接失效；群头像用成员拼")
 
     m = b.mark()
     sent = await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "大家好，周五前要把报告写完"})
@@ -242,6 +258,55 @@ async def main() -> None:
     await a.api("PATCH", f"/api/agents/{aid}", json={"share": "team", "name": "Zeep 的 CC"})
     ok("开关「只有我能 @」：队友被婉拒，主人照常；改名")
 
+    print("agent 叫 agent、停止")
+    m = a.mark()
+    await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "@助手 帮我看看，叫上「Zeep 的 CC」"})
+    first = await reply_done(a, m, helper["id"])
+    assert first["text"].rstrip().endswith("@Zeep 的 CC 你也看一下。") and "hop" not in first["meta"]
+    second = await reply_done(a, m, aid)
+    assert second["meta"]["via"] == "助手" and second["meta"]["hop"] == 1 and second["reply_to"] == first["id"]
+    assert second["meta"]["mode"] == "owner" and second["requested_by"] == a.me["id"] and second["author"]["requester"] == "Zeep"
+    m = b.mark()
+    await b.api("POST", f"/api/chats/{cid}/messages", json={"text": "@助手 叫上「Zeep 的 CC」"})
+    await reply_done(b, m, helper["id"])
+    assert (await reply_done(b, m, aid))["meta"]["mode"] == "guest"  # the chain acts for whoever started it
+    ok("助手的回答里 @ 了别的 agent → 那个 agent 接着干；权限跟着最初发话的人走")
+
+    m = a.mark()
+    await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "@助手 叫上「Zeep 的 CC」，再叫上「助手」"})
+    stop_note = await a.wait(lambda e: e["type"] == "message" and e["message"]["author_type"] == "system"
+                             and "连着接了 2 轮" in e["message"]["text"], 40, m)
+    await asyncio.sleep(1.5)
+    chain = [e["message"] for e in a.events[m:] if e["type"] == "message" and e["message"]["author_type"] == "agent"]
+    assert [(x["author_id"], x["meta"].get("hop", 0)) for x in chain] == [(helper["id"], 0), (aid, 1), (helper["id"], 2)], chain
+    assert stop_note
+    ok("两个 agent 互相 @ 个没完 → 到上限自动停，群里有提示")
+
+    m = a.mark()
+    await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "@助手 说长一点"})
+    d = await a.wait(lambda e: e["type"] == "delta", since=m)
+    assert (await a.api("POST", f"/api/chats/{cid}/messages/{d['id']}/stop"))["stopped"] is True
+    stopped = await reply_done(a, m, helper["id"])
+    assert stopped["status"] == "done" and stopped["meta"]["stopped"] and stopped["meta"]["stopped_by"] == "Zeep"
+    assert 0 < len(stopped["text"]) < 120
+    n = a.mark()
+    await asyncio.sleep(1.2)
+    assert not [e for e in a.events[n:] if e["type"] in ("delta", "message_update")]  # really stopped
+    assert (await a.api("POST", f"/api/chats/{cid}/messages/{d['id']}/stop"))["stopped"] is False
+    m = a.mark()
+    await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "@Zeep 的 CC 干个活"})
+    st = await a.wait(lambda e: e["type"] == "step", since=m)
+    assert (await b.api("POST", f"/api/chats/{cid}/messages/{st['id']}/stop"))["stopped"] is True  # anyone in the group
+    stopped = await reply_done(a, m, aid)
+    assert stopped["meta"]["stopped_by"] == "尹昊"
+    n = a.mark()
+    await asyncio.sleep(1.5)
+    assert not [e for e in a.events[n:] if e["type"] in ("delta", "step", "message_update")]
+    m = a.mark()
+    await a.api("POST", f"/api/chats/{cid}/messages", json={"text": "@Zeep 的 CC 停过之后还能干吗"})
+    assert (await reply_done(a, m, aid))["status"] == "done"
+    ok("停止：助手和接入的 agent 都能中途叫停，群里谁都能点；停了之后照常能用")
+
     print("离线排队")
     m = a.mark()
     conn.terminate()
@@ -251,11 +316,19 @@ async def main() -> None:
     await b.api("POST", f"/api/chats/{cid}/messages", json={"text": "@Zeep 的 CC 你在吗", "mentions": [aid]})
     q = await b.wait(lambda e: e["type"] == "message" and e["message"]["author_type"] == "agent", since=m)
     assert q["message"]["status"] == "queued" and q["message"]["meta"]["owner"] == "Zeep"
+    m2 = b.mark()
+    await b.api("POST", f"/api/chats/{cid}/messages", json={"text": "@Zeep 的 CC 这条不要了", "mentions": [aid]})
+    q2 = await b.wait(lambda e: e["type"] == "message" and e["message"]["author_type"] == "agent", since=m2)
+    assert (await b.api("POST", f"/api/chats/{cid}/messages/{q2['message']['id']}/stop"))["stopped"] is True
     conn = start_connector(home)  # no args: uses the saved config
     await b.wait(lambda e: e["type"] == "message_update" and e["message"]["id"] == q["message"]["id"]
                  and e["message"]["status"] == "thinking", since=m)
-    done = await reply_done(b, m, aid)
-    assert done["status"] == "done" and done["id"] == q["message"]["id"] and done["meta"]["mode"] == "guest"
+    done = (await b.wait(lambda e: e["type"] == "message_update" and e["message"]["id"] == q["message"]["id"]
+                         and e["message"]["status"] in ("done", "error"), 30, m))["message"]
+    assert done["status"] == "done" and done["meta"]["mode"] == "guest" and not done["meta"].get("stopped")
+    await asyncio.sleep(1)
+    cancelled = next(x for x in (await b.api("GET", f"/api/chats/{cid}"))["messages"] if x["id"] == q2["message"]["id"])
+    assert cancelled["meta"]["stopped"] and cancelled["text"] == ""  # the cancelled one was never run
     ok("电脑不在线 → 排队；连接程序不带参数重连 → 自动开始并做完")
 
     second = start_connector(home)  # the same agent connects again: the old one bows out, the agent stays online
@@ -306,7 +379,7 @@ async def main() -> None:
 
 
 def run() -> int:
-    env = {**os.environ, "AGENTWORK_FAKE_AI": "1", "AGENTWORK_DATA": str(TMP / "data")}
+    env = {**os.environ, "AGENTWORK_FAKE_AI": "1", "AGENTWORK_DATA": str(TMP / "data"), "AGENTWORK_MAX_HOPS": "2"}
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "server.main:app", "--port", str(PORT), "--log-level", "warning"],
         cwd=ROOT, env=env)
