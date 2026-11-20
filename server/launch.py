@@ -32,20 +32,21 @@ def say(msg: str) -> None:
 def build_web() -> bool:
     if (WEB / "dist" / "index.html").exists():
         return True
-    npm = shutil.which("npm")
-    if not npm:
+    if not shutil.which("npm"):
         say("网页还没构建，而且这台电脑上没找到 npm。先装 Node.js（https://nodejs.org），再启动一次。")
         return False
     say("第一次启动：正在构建网页（要一两分钟，只做这一次）…")
+
+    def npm(args: str) -> bool:  # through the shell: on Windows npm is npm.cmd
+        return subprocess.run("npm " + args, shell=True, cwd=WEB).returncode == 0
+
     if not (WEB / "node_modules").exists():
-        ok = subprocess.run([npm, "install", "--no-audit", "--no-fund"], cwd=WEB).returncode == 0
-        if not ok:
+        if not npm("install --no-audit --no-fund"):
             say("npm 安装失败，换国内镜像再试一次…")
-            ok = subprocess.run([npm, "install", "--no-audit", "--no-fund", "--registry", NPM_MIRROR], cwd=WEB).returncode == 0
-        if not ok:
-            say("npm install 还是失败了。检查网络后再启动一次。")
-            return False
-    if subprocess.run([npm, "run", "build"], cwd=WEB).returncode != 0:
+            if not npm("install --no-audit --no-fund --registry " + NPM_MIRROR):
+                say("npm install 还是失败了。检查网络后再启动一次。")
+                return False
+    if not npm("run build"):
         say("网页构建失败，看上面的报错。")
         return False
     return True

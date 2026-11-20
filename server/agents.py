@@ -255,6 +255,15 @@ async def _builtin_api(m: dict, prompt: str) -> None:
                             "tokens": (usage.input_tokens or 0) + (usage.output_tokens or 0)})
 
 
+NOT_LOGGED_IN = ("内置助手用的是这台电脑上的 Claude Code，它还没登录：在终端运行 `claude`，输入 `/login` 登录一次，"
+                 "再 @ 我就好。（或者在 agentwork 文件夹的 `.env` 里放 `ANTHROPIC_API_KEY`，然后重启。）")
+
+
+def _looks_logged_out(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in ("not logged in", "/login", "invalid api key", "authentication_error", "oauth token"))
+
+
 async def _builtin_cli(m: dict, prompt: str) -> None:
     workdir = db.DATA_DIR / "builtin"
     workdir.mkdir(exist_ok=True)
@@ -263,6 +272,7 @@ async def _builtin_cli(m: dict, prompt: str) -> None:
     # the instructions go in on stdin with the prompt: no Chinese text in argv (Windows cmd mangles it)
     prompt = BUILTIN_SYSTEM + "\n\n" + prompt
     result: dict = {}
+    raw = ""
     async for ev in claude_cli_events(args, prompt, str(workdir)):
         kind = ev.get("type")
         if kind == "stream_event":
@@ -270,15 +280,20 @@ async def _builtin_cli(m: dict, prompt: str) -> None:
             d = e.get("delta") or {}
             if e.get("type") == "content_block_delta" and d.get("type") == "text_delta":
                 await _delta(m, d.get("text", ""))
+        elif kind == "_raw":
+            raw += ev.get("text", "") + "\n"
         elif kind == "result":
             result = ev
     if not result:
-        await _fail(m, "这台电脑上的 Claude Code 没有回话（进程提前退出了）。")
+        if _looks_logged_out(raw):
+            await _fail(m, NOT_LOGGED_IN)
+        else:
+            await _fail(m, "这台电脑上的 Claude Code 没有回话（进程提前退出了）。在终端运行一下 `claude` 看看它能不能用。")
         return
     text = (result.get("result") or "").strip()
     if result.get("is_error"):
-        if "login" in text.lower():
-            await _fail(m, "内置助手用的是这台电脑上的 Claude Code，它还没登录：在终端运行 `claude`，输入 `/login` 登录一次就好。")
+        if _looks_logged_out(text):
+            await _fail(m, NOT_LOGGED_IN)
         else:
             await _fail(m, f"Claude Code 报错：{text[:300]}")
         return
@@ -292,26 +307,38 @@ async def claude_cli_events(args: list[str], prompt: str, cwd: str) -> AsyncIter
     exe = shutil.which("claude")
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    put = lambda ev: loop.call_soon_threadsafe(queue.put_nowait, ev)  # noqa: E731
 
     def worker() -> None:
         try:
-            p = subprocess.Popen([exe, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.DEVNULL)
-            p.stdin.write(prompt.encode("utf-8"))
-            p.stdin.close()
+            if os.name == "nt":
+                # On Windows `claude` is usually claude.cmd: go through the shell with one fixed
+                # command line (flags only; the prompt is on stdin), so paths with spaces are fine.
+                cmd: str | list[str] = "claude " + " ".join(a if a else '""' for a in args)
+                p = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT)
+            else:
+                p = subprocess.Popen([exe, *args], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT)
+            try:
+                p.stdin.write(prompt.encode("utf-8"))
+                p.stdin.close()
+            except OSError:
+                pass  # it died before reading; whatever it printed explains why
             for raw in p.stdout:
                 line = raw.decode("utf-8", "replace").strip()
                 if not line:
                     continue
                 try:
-                    loop.call_soon_threadsafe(queue.put_nowait, json.loads(line))
+                    ev = json.loads(line)
                 except ValueError:
-                    pass
+                    ev = None
+                put(ev if isinstance(ev, dict) else {"type": "_raw", "text": line[:500]})
             p.wait(timeout=30)
         except Exception as e:  # surface as a result event
-            loop.call_soon_threadsafe(queue.put_nowait, {"type": "result", "is_error": True, "result": str(e)})
+            put({"type": "result", "is_error": True, "result": str(e)})
         finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+            put(None)
 
     threading.Thread(target=worker, daemon=True).start()
     while True:

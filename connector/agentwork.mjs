@@ -302,7 +302,7 @@ function looksNotLoggedIn(s) {
 }
 
 function looksNotInstalled(s) {
-  return /is not recognized|not found|不是内部或外部命令|ENOENT/i.test(s || '');
+  return /is not recognized|command not found|不是内部或外部命令|ENOENT/i.test(s || '');
 }
 
 function claudeOnce(job, cwd, resumeId) {
@@ -322,6 +322,8 @@ function claudeOnce(job, cwd, resumeId) {
     }
 
     let buf = '';
+    let plain = ''; // stdout 里不是 JSON 的行（比如「Not logged in」）
+    let sawEvent = false;
     let stderr = '';
     let result = null;
     let sessionId = null;
@@ -340,6 +342,14 @@ function claudeOnce(job, cwd, resumeId) {
       killTree(child);
       finish({ error: '干了 15 分钟还没完，我先停了。把活拆小一点再 @ 我。' });
     }, JOB_TIMEOUT_MS);
+
+    const onLine = (line) => {
+      line = line.trim();
+      if (!line) return;
+      let ev;
+      try { ev = JSON.parse(line); } catch { plain = (plain + '\n' + line).slice(-2000); return; }
+      if (ev && typeof ev === 'object') { sawEvent = true; onEvent(ev); }
+    };
 
     const onEvent = (ev) => {
       if (ev.session_id) sessionId = ev.session_id;
@@ -368,10 +378,9 @@ function claudeOnce(job, cwd, resumeId) {
       buf += chunk;
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
+        const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
-        if (!line) continue;
-        try { onEvent(JSON.parse(line)); } catch { /* 不是 JSON 的行忽略 */ }
+        onLine(line);
       }
     });
     child.stderr.setEncoding('utf8');
@@ -382,7 +391,7 @@ function claudeOnce(job, cwd, resumeId) {
     });
 
     child.on('close', (code) => {
-      if (buf.trim()) { try { onEvent(JSON.parse(buf.trim())); } catch { /* 忽略 */ } }
+      onLine(buf);
       if (result) {
         const text = String(result.result ?? '').trim();
         if (result.is_error) {
@@ -393,9 +402,11 @@ function claudeOnce(job, cwd, resumeId) {
         }
         return;
       }
-      const all = stderr + ' ' + buf;
+      const all = stderr + ' ' + plain;
       if (looksNotLoggedIn(all)) finish({ error: NOT_LOGGED_IN });
       else if (looksNotInstalled(all)) finish({ error: NOT_INSTALLED });
+      // 中文 Windows 上「不是内部或外部命令」是 GBK 编码，认不出来；没有任何输出就退出，多半是没装
+      else if (process.platform === 'win32' && !sawEvent && (code === 1 || code === 9009)) finish({ error: NOT_INSTALLED });
       else finish({ error: `Claude Code 提前退出了（代码 ${code}）。${short(stderr, 200)}`, resumeFailed: true });
     });
 
